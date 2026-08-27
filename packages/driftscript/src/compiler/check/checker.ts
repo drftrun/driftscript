@@ -29,17 +29,19 @@ import type {
   PrefabDecl,
 } from '../ast.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
-import type { CapabilityRegistry } from '../../registry/capability.ts';
+import { FLOAT, type CapabilityRegistry } from '../../registry/capability.ts';
 import { isPrimitive } from '../tokens.ts';
 import {
   BOOL,
   ERROR,
+  FLOATS,
   INTEGERS,
   STRING,
   type Type,
   VOID,
   assignable,
   isBool,
+  isFloat,
   isNumeric,
   nameOf,
   option,
@@ -100,6 +102,20 @@ export interface CheckResult {
   readonly queries: ReadonlyMap<Stmt, QueryPlan>;
   /** What every function and system touches, for the metadata a host builds a schedule from. */
   readonly access: ReadonlyMap<string, Access>;
+  /**
+   * Capability calls whose result the backend must round to `f32`.
+   *
+   * A `float` capability is implemented once, in double, and the *call site* rounds — which is
+   * where this language already says rounding belongs, since `a * b` on `f32` emits its own
+   * `Math.fround` rather than trusting an operand to have been rounded. Only the checker knows
+   * which width a call resolved to, so it records the set and lowering reads it, exactly as it does
+   * for `queries`. A second place deciding this would be a second answer to one question.
+   *
+   * Emptied of everything else on purpose: an ordinary `f32`-returning capability is *not* in here.
+   * The host computed it at the width it declared, and wrapping every such call would put a
+   * function call on a per-frame path to re-round a number that was already rounded.
+   */
+  readonly rounded: ReadonlySet<Expr>;
   readonly diagnostics: readonly Diagnostic[];
 }
 
@@ -133,6 +149,22 @@ export const SYSTEM_VIEW = 'world';
 function isConstantExpr(expr: Expr): boolean {
   if (expr.kind === 'number' || expr.kind === 'string' || expr.kind === 'bool') return true;
   return expr.kind === 'unary' && isConstantExpr(expr.operand);
+}
+
+/**
+ * Whether a numeric expression would take its width from an expectation rather than carry one.
+ *
+ * A bare literal and a negated one, and nothing else. This is the same rule `checkExpr` already
+ * applies to a `number` — it has no width until something gives it one — read from the outside so
+ * a `float` capability call can decide which of its arguments get to fix the call's width. An
+ * expression with any other shape has a type of its own and is therefore evidence.
+ *
+ * Deliberately *not* a fold: `math.min(x, 1 + 1)` leaves the sum to fix its own width and report
+ * its own mismatch, which is where a reader would look for it.
+ */
+function takesWidthFromContext(expr: Expr): boolean {
+  if (expr.kind === 'number') return true;
+  return expr.kind === 'unary' && expr.op === '-' && takesWidthFromContext(expr.operand);
 }
 
 /** A name bound in a body, and whether it may be written through. */
@@ -225,6 +257,9 @@ class Checker {
    * decided it would be a second answer.
    */
   private readonly queries = new Map<Stmt, QueryPlan>();
+
+  /** Capability calls that resolved a `float` signature at `f32`. See `CheckResult.rounded`. */
+  private readonly rounded = new Set<Expr>();
 
   /**
    * The world a query loop in this body would run against, or null when there is none.
@@ -414,6 +449,7 @@ class Checker {
       functions: this.functions,
       queries: this.queries,
       access: this.access,
+      rounded: this.rounded,
       diagnostics: this.diagnostics,
     };
   }
@@ -1873,11 +1909,18 @@ class Checker {
       return ERROR;
     }
     if (!same(left, right)) {
+      /* The conversions named are the ones that apply to what is actually here. A message that
+         offered `checked`, `clamp` and `wrap` to somebody holding two floats sent them to `DS0232`,
+         which told them floats have no conversions — a two-step path to a dead end. */
+      const spellings =
+        isFloat(left) && isFloat(right)
+          ? `\`${nameOf(left)}.nearest\` or \`${nameOf(right)}.nearest\``
+          : '`checked`, `clamp` or `wrap`';
       this.report(
         'DS0230',
         `\`${expr.op}\` needs both operands to be the same type, but found \`${nameOf(left)}\` ` +
           `and \`${nameOf(right)}\`. There is no implicit widening; convert one explicitly with ` +
-          '`checked`, `clamp` or `wrap`.',
+          `${spellings}.`,
         expr.span,
       );
       return ERROR;
@@ -2003,13 +2046,30 @@ class Checker {
   }
 
   /**
-   * A conversion to a narrower or differently-signed integer.
+   * A conversion to another numeric type: three spellings for an integer, one for a float.
    *
    * **`checked` yields an option rather than a `Result`**, and that is a decision worth its line.
    * There is exactly one way a conversion fails — the value does not fit — so an error type would
    * carry no information a reader could act on, and inventing one would put a name in the standard
    * library that every consumer then has to match against. `?` propagates an option just as it
    * propagates a failure, so `u8.checked(v)?` reads the way the design writes it.
+   *
+   * **A float gets one spelling, `nearest`, and the asymmetry is the point.** An integer narrowing
+   * has three intents the compiler must not choose between — fail, pin, take the low bits — because
+   * each is right somewhere and the wrong one is silent. A float conversion has one: IEEE rounds to
+   * the nearest representable value, in both directions, and there is no second thing a caller
+   * could have meant. Three names here would be two lies.
+   *
+   * So `nearest` covers the widening as honestly as the narrowing. `f32.nearest(x)` on an `f64`
+   * rounds and loses precision; `f64.nearest(x)` on an `f32` is exact, because every `f32` value is
+   * an `f64` value and the nearest one is itself. It still has to be written: `LANGUAGE.md` promises
+   * there is no implicit widening, and a promise with an exception for the lossless direction is one
+   * a reader has to keep a list for.
+   *
+   * **Added in 1.5.0, and the hole it closes was reported rather than predicted.** `std/math` is
+   * single precision and a generic ECS accessor is double, so a script that read a component field
+   * and wanted its square root could not say so — and `DS0232` told it, in words, that no
+   * conversion existed.
    */
   private checkConversion(
     target: string,
@@ -2018,21 +2078,34 @@ class Checker {
     scope: Scope,
   ): Type {
     const to = primitive(target);
+    const isInteger = INTEGERS.has(target);
+    const isFloatTarget = FLOATS.has(target);
 
-    if (!INTEGERS.has(target)) {
+    if (!isInteger && !isFloatTarget) {
       this.report(
         'DS0232',
-        `\`${target}\` has no conversions; \`checked\`, \`clamp\` and \`wrap\` are for integers`,
+        `\`${target}\` has no conversions; \`checked\`, \`clamp\` and \`wrap\` are for ` +
+          'integers and `nearest` is for floats',
         expr.span,
       );
       for (const arg of expr.args) this.checkExpr(arg, scope);
       return ERROR;
     }
 
-    if (method !== 'checked' && method !== 'clamp' && method !== 'wrap') {
+    const allowed = isInteger ? ['checked', 'clamp', 'wrap'] : ['nearest'];
+    if (!allowed.includes(method)) {
+      /*
+       * One code for both, because it is one mistake: a conversion this type does not have.
+       *
+       * Splitting it by target would give a consumer two codes to grep for the same sentence, which
+       * `annotations.ts` already declines to do for the same reason.
+       */
       this.report(
         'DS0233',
-        `\`${target}\` has \`checked\`, \`clamp\` and \`wrap\`, not \`${method}\``,
+        isInteger
+          ? `\`${target}\` has \`checked\`, \`clamp\` and \`wrap\`, not \`${method}\``
+          : `\`${target}\` has \`nearest\`, not \`${method}\`. A float rounds to the nearest ` +
+              'value it can hold and neither wraps nor saturates.',
         expr.span,
       );
       for (const arg of expr.args) this.checkExpr(arg, scope);
@@ -2055,6 +2128,8 @@ class Checker {
       return ERROR;
     }
 
+    /* `nearest` cannot fail — every number has a nearest `f32` and a nearest `f64`, including the
+       infinities a value too large to represent rounds to. Only `checked` yields an option. */
     return method === 'checked' ? option(to) : to;
   }
 
@@ -2109,13 +2184,46 @@ class Checker {
         expr.span,
       );
       for (const arg of expr.args) this.checkExpr(arg, scope);
-      return this.resolveTypeName(definition.returns, expr.span);
+      /* The width cannot be resolved from a call whose arity is already wrong, so a `float` return
+         falls to the default rather than reporting a second, derived complaint. */
+      return definition.returns === FLOAT
+        ? primitive('f32')
+        : this.resolveTypeName(definition.returns, expr.span);
     }
+
+    /*
+     * A `float` signature is checked in two passes, because its width belongs to the *call*.
+     *
+     * `math.clamp(v, 0, 1)` has to work when `v` is an `f64`, and the two literals cannot decide
+     * that for themselves — a bare number has no width until something gives it one, which is
+     * already how `let n: u8 = 3` avoids being a conversion error. So the arguments that *do* carry
+     * a width go first and the first float among them fixes the call; the literals are held back and
+     * checked afterwards against what was fixed. One pass in source order would have made
+     * `math.lerp(0, 1, t)` on an `f64` `t` a mismatch over the literal `0`, which points at the
+     * wrong argument and reads as nonsense.
+     *
+     * **Every argument is still checked exactly once**, which is the property that matters: checking
+     * one twice would report its errors twice, and the deferred set is literals, which report
+     * nothing.
+     *
+     * A signature with no `float` in it pays nothing for any of this. The first pass defers no
+     * argument, so the second finds `actuals` already full and the third returns at its first line.
+     */
+    const actuals: (Type | undefined)[] = new Array<Type | undefined>(expr.args.length);
+    let width: string | null = null;
 
     expr.args.forEach((arg, index) => {
       const parameter = definition.params[index];
+      if (parameter.type === FLOAT) {
+        if (takesWidthFromContext(arg)) return;
+        const actual = this.checkExpr(arg, scope);
+        actuals[index] = actual;
+        if (width === null && isFloat(actual)) width = actual.name;
+        return;
+      }
       const declared = this.resolveTypeName(parameter.type, arg.span);
       const actual = this.checkExpr(arg, scope, declared);
+      actuals[index] = actual;
       if (!assignable(actual, declared)) {
         this.report(
           'DS0263',
@@ -2126,7 +2234,45 @@ class Checker {
       }
     });
 
-    return this.resolveTypeName(definition.returns, expr.span);
+    /* Nothing fixed it, so the call is single precision — the width a bare literal takes and
+       therefore the width every script that predates this rule already meant. */
+    const fixed: boolean = width !== null;
+    const resolved = primitive(width ?? 'f32');
+
+    expr.args.forEach((arg, index) => {
+      if (actuals[index] === undefined) actuals[index] = this.checkExpr(arg, scope, resolved);
+    });
+
+    expr.args.forEach((arg, index) => {
+      if (definition.params[index].type !== FLOAT) return;
+      const actual = actuals[index] as Type;
+      if (assignable(actual, resolved)) return;
+      /*
+       * Two shapes of wrongness, and they deserve different sentences.
+       *
+       * A float of the other width is a conversion the caller can write, so the message names it —
+       * this is the case the whole feature exists for, and a diagnostic that stopped at "expects
+       * f64" would leave the reader where `DS0232` used to leave them. Anything else is not a float
+       * at all, and when no argument fixed the width the honest thing is to say both are welcome.
+       */
+      const wanted = fixed || isFloat(actual) ? `\`${nameOf(resolved)}\`` : '`f32` or `f64`';
+      const hint = isFloat(actual)
+        ? `. Convert it with \`${nameOf(resolved)}.nearest(…)\``
+        : '';
+      this.report(
+        'DS0263',
+        `\`${namespace.module}.${member}\` expects ${wanted} for ` +
+          `\`${definition.params[index].name}\` but this is \`${nameOf(actual)}\`${hint}`,
+        arg.span,
+      );
+    });
+
+    if (definition.returns !== FLOAT) return this.resolveTypeName(definition.returns, expr.span);
+
+    /* Single precision is rounded at the call rather than by the host — see `CheckResult.rounded`
+       for why the implementation computes in double and this is where it narrows. */
+    if (resolved.kind === 'primitive' && resolved.name === 'f32') this.rounded.add(expr);
+    return resolved;
   }
 
   /**

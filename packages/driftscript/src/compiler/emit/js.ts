@@ -210,7 +210,11 @@ function emitExprText(expr: IrExpr): string {
        * Only the last segment can collide with a JavaScript keyword, since the first is a type name
        * or an import namespace.
        */
-      return `${expr.callee.split('.').map(jsName).join('.')}(${expr.args.map(emitExprText).join(', ')})`;
+      const call = `${expr.callee.split('.').map(jsName).join('.')}(${expr.args.map(emitExprText).join(', ')})`;
+      /* A capability polymorphic in its float width computes in double and narrows here. See
+         `IrExpr`'s `rounds`, and note that an ordinary `f32` capability is not wrapped: the host
+         returned the width it declared and re-rounding it would cost a call per frame for nothing. */
+      return expr.rounds ? `Math.fround(${call})` : call;
     }
     case 'record':
       return `{ ${expr.fields.map((f) => `${f.name}: ${emitExprText(f.value)}`).join(', ')} }`;
@@ -227,10 +231,24 @@ function emitExprText(expr: IrExpr): string {
   }
 }
 
-/** The three integer conversions, or `null` when the callee is something else. */
+/** The numeric conversions, or `null` when the callee is something else. */
 function conversionCall(expr: Extract<IrExpr, { kind: 'call' }>): string | null {
   const [owner, method] = expr.callee.split('.');
   if (method === undefined) return null;
+
+  /*
+   * A float conversion needs no helper, because JavaScript has exactly one number type.
+   *
+   * `f32.nearest(v)` is `Math.fround`, which is the whole of single precision here. `f64.nearest(v)`
+   * is the value itself and emits nothing at all — every `f64` a script can hold is already a
+   * double, so the conversion is a *type* claim the checker made and the backend has no work to do.
+   * Emitting an identity call for it would put a function on a frame path to return its argument.
+   */
+  if (method === 'nearest' && (owner === 'f32' || owner === 'f64')) {
+    const value = emitExprText(expr.args[0]);
+    return owner === 'f32' ? `Math.fround(${value})` : value;
+  }
+
   const range = INTEGER_RANGE[owner];
   if (range === undefined) return null;
 

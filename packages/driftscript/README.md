@@ -159,6 +159,37 @@ back. The language server reads the same file, for the same reason.
 
 Passing both `registry` and `capabilities` is refused. Neither one silently wins.
 
+### A capability that works at either float width
+
+A parameter or return written `float` means **`f32` or `f64`, the same one throughout the call**:
+
+```ts
+defineCapability({
+  module: 'drift/ecs',
+  name: 'lengthOf',
+  signature: 'fn(x: float, y: float) -> float',
+  params: [{ name: 'x', type: 'float' }, { name: 'y', type: 'float' }],
+  returns: 'float',
+  effects: ['pure'],
+  deterministic: true,
+  doc: 'The length of a vector.',
+  implementation: 'drift.ecs.lengthOf',
+});
+```
+
+The width is fixed by the first argument that has one; bare literals take whatever that turns out to
+be; a call where nothing fixes it is `f32`. So this widens what a signature accepts without adding a
+coercion anywhere — an `f32` still does not become an `f64` by itself, and a call mixing both widths
+is refused with `f32.nearest` named as the fix.
+
+**Implement it once, in double, and do not round.** The compiler wraps an `f32`-resolved call in
+`Math.fround` and leaves an `f64` one alone, because only it knows which width the call resolved to.
+`std/math` and `std/time` are written this way and are the worked example.
+
+A `float` return needs at least one `float` parameter, since otherwise nothing could fix the width;
+`defineCapability` refuses that at registration rather than letting every call quietly resolve to
+`f32`.
+
 ### Telling TypeScript what a `.drs` import is
 
 ```ts
@@ -209,7 +240,7 @@ language's keywords by reading the lexer. The VSCode client is in the same repos
 
 ## What it costs
 
-388 kB packed, 1.7 MB unpacked, because the tarball carries compiled JavaScript, declarations,
+400 kB packed, 1.8 MB unpacked, because the tarball carries compiled JavaScript, declarations,
 source maps and the source those maps point at. The runtime a browser actually receives is a few
 kilobytes gzipped — the compiler is behind its own entry point and a production bundle drops it.
 

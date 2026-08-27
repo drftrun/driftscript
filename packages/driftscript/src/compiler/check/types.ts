@@ -112,6 +112,15 @@ const NUMERIC: ReadonlySet<string> = new Set([
   'f64',
 ]);
 
+/**
+ * The float primitives, whose one conversion is rounding to the nearest representable value.
+ *
+ * A set of its own beside `INTEGERS` because the two answer different questions and a conversion
+ * asks both: an integer narrowing has three intents and needs three spellings, a float conversion
+ * has one and needs one. See `checkConversion`, which branches on exactly these two sets.
+ */
+export const FLOATS: ReadonlySet<string> = new Set(['f32', 'f64']);
+
 /** The integer primitives, whose overflow behaviour is always chosen rather than assumed. */
 export const INTEGERS: ReadonlySet<string> = new Set([
   'i8',
@@ -142,6 +151,17 @@ export function isNumeric(type: Type): boolean {
 
 export function isBool(type: Type): boolean {
   return type.kind === 'primitive' && type.name === 'bool';
+}
+
+/*
+ * A type predicate rather than a plain boolean, unlike `isNumeric` and `isBool` beside it.
+ *
+ * The float check has one caller that needs the *name* immediately afterwards — capability-call
+ * width resolution reads `f32` or `f64` off the type it just accepted — and narrowing at the test
+ * is what stops that caller from re-testing the kind to satisfy the compiler.
+ */
+export function isFloat(type: Type): type is { kind: 'primitive'; name: string } {
+  return type.kind === 'primitive' && FLOATS.has(type.name);
 }
 
 /** A name for a type, as a diagnostic prints it. */

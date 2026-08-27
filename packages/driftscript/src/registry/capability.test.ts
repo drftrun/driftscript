@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type CapabilityDefinition, createRegistry, defineCapability } from './capability.ts';
+import { FLOAT, type CapabilityDefinition, createRegistry, defineCapability } from './capability.ts';
 
 const PLAY: CapabilityDefinition = defineCapability({
   module: 'drift/audio',
@@ -104,6 +104,66 @@ describe('the determinism boundary', () => {
         implementation: 'World.write',
       }),
     ).not.toThrow();
+  });
+
+  it('accepts a signature polymorphic in its float width', () => {
+    expect(() =>
+      defineCapability({
+        module: 'drift/ecs',
+        name: 'lengthOf',
+        signature: 'fn(x: float, y: float) -> float',
+        params: [
+          { name: 'x', type: FLOAT },
+          { name: 'y', type: FLOAT },
+        ],
+        returns: FLOAT,
+        effects: ['pure'],
+        deterministic: true,
+        doc: 'The length of a vector.',
+        implementation: 'World.lengthOf',
+      }),
+    ).not.toThrow();
+  });
+
+  it('refuses a `float` return that no parameter can fix', () => {
+    /* Every call would fall to the `f32` default, so the variable would be a slower spelling of
+       `f32` while the host believed it had written something polymorphic. Caught at registration,
+       where a person is watching, rather than at a call site where nothing looks wrong. */
+    expect(() =>
+      defineCapability({
+        module: 'drift/ecs',
+        name: 'gravity',
+        signature: 'fn() -> float',
+        params: [],
+        returns: FLOAT,
+        effects: ['pure'],
+        deterministic: true,
+        doc: 'The gravitational constant.',
+        implementation: 'World.gravity',
+      }),
+    ).toThrow(/nothing fixes the width/);
+  });
+
+  it('refuses a decorated `float`, because only the bare name has a rule', () => {
+    expect(() =>
+      defineCapability({
+        module: 'drift/ecs',
+        name: 'maybeRead',
+        signature: 'fn(entity: f64) -> float?',
+        params: [{ name: 'entity', type: 'f64' }],
+        returns: 'float?',
+        effects: ['ecs.read'],
+        deterministic: true,
+        doc: 'A field, if it is there.',
+        implementation: 'World.maybeRead',
+      }),
+    ).toThrow(/used bare or not at all/);
+  });
+
+  it('refuses a host type named `float`, which would make every signature ambiguous', () => {
+    expect(() =>
+      createRegistry().addType({ module: 'drift/ecs', name: FLOAT, doc: 'A number.' }),
+    ).toThrow(/either float width/);
   });
 
   it('still refuses a deterministic capability that moves a node, which is the view', () => {

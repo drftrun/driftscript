@@ -112,6 +112,32 @@ export const DETERMINISTIC_EFFECTS: ReadonlySet<Effect> = new Set<Effect>([
  */
 export type TypeName = string;
 
+/**
+ * The one `TypeName` that is not a type: **either float width, the same one throughout a call**.
+ *
+ * `std/math` is why this exists, and the shape of the problem generalises past it. Every maths
+ * function was written `f32`, because that is the width an engine's own maths computes in and the
+ * width a bare literal takes. But a generic accessor cannot be single precision — `drift/ecs.read`
+ * hands back an `f64` because it does not know the field's width and a double is the only carrier
+ * wide enough for all of them — so a script that read a component and wanted its square root had a
+ * type error and no conversion, which is exactly how a consumer reported it.
+ *
+ * **One variable per signature rather than one per parameter**, and that is the whole design. The
+ * width is fixed by the first argument in a `float` position that has one, every other `float`
+ * position must already be that width, and the return is it. So this widens what a signature
+ * accepts without introducing a coercion anywhere: `f32` still does not become `f64` on its own,
+ * and `LANGUAGE.md`'s "there is no implicit widening" still holds word for word.
+ *
+ * **A call where nothing fixes the width is `f32`**, which is the literal default and therefore
+ * what every existing script already meant.
+ *
+ * The cost is a name a script author cannot write — `float` is not a type annotation, only a thing
+ * a *host* says about its own signature. What would make it wrong is a capability wanting two
+ * independent float widths in one signature, which nothing has asked for and which this shape
+ * deliberately cannot express.
+ */
+export const FLOAT: TypeName = 'float';
+
 export interface CapabilityParam {
   readonly name: string;
   readonly type: TypeName;
@@ -186,6 +212,42 @@ export function defineCapability(definition: CapabilityDefinition): CapabilityDe
     throw new Error(`${definition.module}.${definition.name} names no implementation`);
   }
 
+  /*
+   * `float` is a variable, so a signature has to say what fixes it.
+   *
+   * A return of `float` with no parameter of `float` is a signature whose width nothing can
+   * determine: every call would fall to the `f32` default, which makes the variable a slower
+   * spelling of `f32` and makes a host think it wrote something polymorphic. Caught here because a
+   * definition is evaluated at module load and this is a mistake in the *host*, not in a script —
+   * `AGENTS.md`'s fail-fast-at-init rule, where a person is watching.
+   */
+  const floatParams = definition.params.filter((p) => p.type === FLOAT);
+  if (definition.returns === FLOAT && floatParams.length === 0) {
+    throw new Error(
+      `${definition.module}.${definition.name} returns \`float\` but takes no \`float\` ` +
+        'parameter, so nothing fixes the width. Give it one, or return `f32` or `f64`.',
+    );
+  }
+
+  /*
+   * `float` is the bare name and nothing else — not `float?`, not a decorated form.
+   *
+   * An optional float is expressible and nothing has asked for one, and the resolution rule would
+   * have to say what an absent value does to a width fixed by another argument. Refusing it now
+   * means a host gets a sentence at registration instead of a surprise at a call site. **What would
+   * reverse this** is a capability that genuinely reads a float that may not be there, at which
+   * point the rule to write is that an absent value fixes nothing.
+   */
+  const decorated = [...definition.params.map((p) => p.type), definition.returns].filter(
+    (type) => type !== FLOAT && type.replace(/\?+$/, '') === FLOAT,
+  );
+  if (decorated.length > 0) {
+    throw new Error(
+      `${definition.module}.${definition.name} writes \`${decorated[0]}\`; \`float\` is used ` +
+        'bare or not at all',
+    );
+  }
+
   return definition;
 }
 
@@ -224,6 +286,16 @@ export function createRegistry(): CapabilityRegistry {
 
   return {
     addType(type) {
+      if (type.name === FLOAT) {
+        /* `float` is the width variable a signature writes, so a host type of that name would make
+           every `float` parameter ambiguous between the two readings — and the winner would be
+           whichever branch of `resolveTypeName` ran first, which is not a thing a host author can
+           see. Refused where the collision is, the way a duplicate opaque name already is. */
+        throw new Error(
+          `\`${type.module}\` registers a type named \`float\`, which is the name a signature ` +
+            'uses for either float width',
+        );
+      }
       const existing = opaque.get(type.name);
       if (existing !== undefined && existing.module !== type.module) {
         /* Opaque types share one namespace across modules, because a script writes `Sound` rather

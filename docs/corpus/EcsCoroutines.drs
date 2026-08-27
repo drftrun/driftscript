@@ -26,6 +26,7 @@
 // of them. Tasks here are owned by a scope rather than held, which is safer and less flexible.
 
 import { alive, destroy } from "drift/ecs"
+import { clamp, sqrt } from "std/math"
 
 component Position {
     x: f64 = 0
@@ -51,6 +52,13 @@ component Brain {
 // positions is `f64`. This language has no implicit widening, so a helper taking `f32` would be a
 // compile error at every call — and that refusal is the feature working: an `f32` holding a handle
 // would silently truncate its generation.
+//
+// **That forcing is what found the hole `std/math` had until 1.5.0.** Every maths signature was
+// written `f32`, which is the width a literal takes and the width an engine's own maths computes
+// in — so a file like this one could not call a single one of them, and the compiler's own advice
+// was that floats had no conversions. A consumer reported it after working around it. The maths
+// signatures now say `float`, meaning either width and the same one throughout a call, which is why
+// `Senses` below can take a square root of a distance it computed in double.
 @pure
 fn distanceSquared(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let dx = bx - ax
@@ -90,14 +98,21 @@ system Senses {
     update at 4Hz {
         for self in query<Brain, Position>() {
             for other in query<Position>() {
-                let near = distanceSquared(
+                let squared = distanceSquared(
                     self.Position.x,
                     self.Position.y,
                     other.Position.x,
                     other.Position.y,
-                ) < self.Brain.range * self.Brain.range
-                if near {
-                    self.Brain.alert = 1
+                )
+                if squared < self.Brain.range * self.Brain.range {
+                    // Graded rather than a flag, and written in double throughout.
+                    //
+                    // `math.sqrt` and `math.clamp` take the width from `squared`, which is `f64`
+                    // because a position is. The literals adopt it: `0` and `1` have no width until
+                    // something gives them one, so they do not drag the call down to single
+                    // precision — which is the rule that makes this line writable at all.
+                    let distance = math.sqrt(squared)
+                    self.Brain.alert = math.clamp(1 - distance / self.Brain.range, 0, 1)
                 }
             }
         }

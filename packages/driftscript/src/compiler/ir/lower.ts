@@ -293,6 +293,7 @@ class Lowering {
           kind: 'call',
           callee: name,
           args: node.args.map((a) => this.expr(a)),
+          rounds: this.checked.rounded.has(node),
           type,
           span: node.span,
         };

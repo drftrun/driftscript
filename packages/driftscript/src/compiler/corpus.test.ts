@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileDriftScript, formatDiagnostic, singleFileHost} from './index.ts';
 import { createRegistry, defineCapability } from '../registry/capability.ts';
+import { registerStd } from '../std/index.ts';
 import { defineTarget } from '../registry/manifest.ts';
 
 /**
@@ -74,6 +75,12 @@ const WIRED = new Set([
  */
 const registry = () => {
   const r = createRegistry();
+  /* The standard library, because a real host registers it and a fixture that did not would let a
+     corpus file importing `std/math` fail here for a reason no consumer would ever hit. It is also
+     the half of the surface these files had never exercised: nothing in the corpus called `std/*`
+     until `EcsCoroutines.drs` did, which is part of why nobody noticed that every maths signature
+     was single precision and every ECS field was double. */
+  registerStd(r);
   r.addType({ module: 'drift/scene', name: 'Node', doc: 'A node in the scene graph.' });
 
   const define = (

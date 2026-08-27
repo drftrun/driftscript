@@ -65,7 +65,7 @@ The line between them is sharper than it looks:
 |---|---|---|
 | `std/time` | the language | `pure` — duration arithmetic, and nothing reads a clock |
 | `drift/time` | the host's loop | `clock.read` — the three deltas of a running frame |
-| `std/math` | the language | `pure` — `clamp`, `lerp`, the scalar functions |
+| `std/math` | the language | `pure` — `clamp`, `lerp`, the scalar functions, at either float width |
 | `drift/random` | the host's generator | deterministic by construction, and the sequence is the host's |
 
 `drift/random` is host-provided rather than standard for a specific reason: a seeded generator
@@ -145,6 +145,25 @@ let a = 1          // f32
 let b: u8 = 200    // u8, and 200 fits
 let c: f64 = 1     // f64
 ```
+
+### Converting between them
+
+No numeric type turns into another on its own. An integer narrowing has three spellings because it
+has three intents, and a float has one because it has one:
+
+```drs
+u8.checked(v)      // u8?, absent when the value does not fit
+u8.clamp(v)        // pinned to the range
+u8.wrap(v)         // the low bits
+
+f32.nearest(v)     // the nearest f32, which is what rounds an f64 down to single precision
+f64.nearest(v)     // the nearest f64, which for an f32 is that value exactly
+```
+
+`nearest` is what IEEE does in both directions and there is nothing else a float conversion could
+have meant, so offering `checked`, `clamp` and `wrap` here would be offering two things that do not
+exist. It has to be written even when it loses nothing: the widening direction is exact, and it is
+still not implicit, because a rule with an exception is a rule a reader has to keep a list for.
 
 ## Expressions
 
@@ -392,6 +411,9 @@ distinction is decorative.
 
 `f32` arithmetic rounds at each operation, which is what single precision means — the same
 expression gives the same answer here as in a shader.
+
+Mixing the two float widths in one expression is refused the same way mixing two integer widths is,
+and the diagnostic names `f32.nearest` or `f64.nearest` rather than the integer spellings.
 
 ## Units
 

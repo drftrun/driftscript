@@ -95,6 +95,7 @@ export function interfacesOf(graph: ResolvedGraph): ReadonlyMap<string, Publishe
              threading state through a path that never reads it. */
           queries: new Map(),
           access: new Map(),
+          rounded: new Set(),
           diagnostics: [],
         },
         from.records,

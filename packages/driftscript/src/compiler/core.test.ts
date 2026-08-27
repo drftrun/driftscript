@@ -361,8 +361,52 @@ describe('conversions', () => {
     expect(mod.f(-300 as never)).toBe(-128);
   });
 
-  it('refuses a conversion on a float type', () => {
-    expect(codesOf('fn f(n: f32) -> f32 {\n    return f32.clamp(n)\n}\n')).toContain('DS0232');
+  it('refuses an integer conversion on a float, and names the one a float has', () => {
+    /* This used to be `DS0232`, "f32 has no conversions" — which was true and was the hole a
+       consumer reported: `std/math` is single precision, a generic ECS accessor is double, and the
+       compiler's own advice was that nothing could be done about it. */
+    const result = compile('fn f(n: f32) -> f32 {\n    return f32.clamp(n)\n}\n');
+    expect(result.diagnostics[0].code).toBe('DS0233');
+    expect(result.diagnostics[0].message).toContain('nearest');
+  });
+
+  it('still refuses a conversion on a type that has none, naming both families', () => {
+    const result = compile('fn f(b: bool) -> bool {\n    return bool.nearest(b)\n}\n');
+    expect(result.diagnostics[0].code).toBe('DS0232');
+    for (const spelling of ['checked', 'clamp', 'wrap', 'nearest']) {
+      expect(result.diagnostics[0].message).toContain(spelling);
+    }
+  });
+
+  it('rounds an f64 to the nearest f32', async () => {
+    const mod = await run('fn f(n: f64) -> f32 {\n    return f32.nearest(n)\n}\n');
+    expect(mod.f(0.1 as never)).toBe(Math.fround(0.1));
+    expect(mod.f(Math.PI as never)).toBe(Math.fround(Math.PI));
+    /* Not merely close: the whole point is that it is the f32 a shader would hold. */
+    expect(mod.f(Math.PI as never)).not.toBe(Math.PI);
+  });
+
+  it('widens an f32 to an f64 exactly, because every f32 is an f64', async () => {
+    const mod = await run('fn f(n: f32) -> f64 {\n    return f64.nearest(n)\n}\n');
+    const single = Math.fround(0.1);
+    expect(mod.f(single as never)).toBe(single);
+  });
+
+  it('refuses the widening unwritten, because there is no implicit widening', () => {
+    /* The conversion existing does not make it optional. `LANGUAGE.md` promises this in one
+       sentence with no exceptions, and an exception for the lossless direction is a promise a
+       reader has to keep a list for. */
+    expect(codesOf('fn f(n: f32) -> f64 {\n    return n\n}\n')).toContain('DS0254');
+    expect(codesOf('fn f(n: f32) {\n    let wide: f64 = n\n}\n')).toContain('DS0208');
+  });
+
+  it('names `nearest` when two floats meet in one expression', () => {
+    const result = compile('fn f(a: f32, b: f64) -> f64 {\n    return a + b\n}\n');
+    expect(result.diagnostics[0].code).toBe('DS0230');
+    expect(result.diagnostics[0].message).toContain('nearest');
+    /* The integer spellings are absent rather than merely outnumbered: offering `wrap` to somebody
+       holding two floats sends them to DS0232, which used to be a dead end. */
+    expect(result.diagnostics[0].message).not.toContain('wrap');
   });
 
   it('refuses a conversion nobody defined, and names the three that exist', () => {

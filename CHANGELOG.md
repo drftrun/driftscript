@@ -12,6 +12,44 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.5.0
+
+**`std/math` works at either float width, and floats have a conversion.** Both halves of one hole,
+reported by a consumer who had already worked around it: `std/math` was single precision, a generic
+ECS accessor is double, and nothing converted between them — `DS0232` said in words that a float had
+no conversions at all.
+
+- **`f32.nearest(v)` and `f64.nearest(v)`.** One spelling per float, where an integer gets three,
+  because an integer narrowing has three intents the compiler must not choose between and a float
+  conversion has one: IEEE rounds to the nearest representable value, in both directions. Widening
+  is exact and still has to be written, because `LANGUAGE.md` promises there is no implicit widening
+  and a promise with an exception is one a reader has to keep a list for.
+- **A capability may declare a parameter or return as `float`**, meaning `f32` or `f64`, the same
+  one throughout the call. The width is fixed by the first argument that has one; bare literals
+  adopt it; a call where nothing fixes it is `f32`. Every `std/math` and `std/time` signature is
+  written this way, so `math.clamp(v, 0, 1)` works whether `v` is single or double precision.
+- **Rounding moved from the standard library's implementations to the call site.** These used to
+  apply `Math.fround` to every result, which stopped being correct the moment a call could be at
+  double precision — the code protecting precision would have been the code destroying it. The
+  compiler now wraps an `f32`-resolved call and leaves an `f64` one alone. **A single-precision call
+  emits the identical arithmetic it did before.**
+- **Diagnostics point at the conversion that exists.** `DS0230` on two floats names
+  `f32.nearest`/`f64.nearest` instead of the three integer spellings, which used to send a reader to
+  `DS0232` and a dead end. `DS0263` on a float-to-float mismatch names the conversion and the width
+  the call resolved to. `DS0233` covers a wrong conversion method on a float; no code was
+  renumbered and none was added.
+- **Refused at registration rather than at a call site:** a `float` return with no `float` parameter
+  (nothing could fix the width, so every call would quietly be `f32`), a decorated `float` such as
+  `float?`, and a host type named `float`.
+
+**A `.drs` file that compiled under 1.4.0 compiles under 1.5.0, to the same JavaScript, with the
+same diagnostics** — except that `f32.clamp(v)` now reports `DS0233` naming `nearest`, where it used
+to report `DS0232` saying no conversion existed.
+
+**For a host: implement a `float` capability once, in double, and do not round.** If you had copied
+`std/math`'s old shape and were applying `Math.fround` inside your own implementations, that is
+still correct for a signature you leave written `f32`, and wrong for one you change to `float`.
+
 ## 1.4.0
 
 **The language is publishable, and this repository is what made it so.**

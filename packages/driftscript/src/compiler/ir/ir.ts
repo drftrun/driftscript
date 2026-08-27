@@ -105,6 +105,19 @@ export type IrExpr =
       readonly kind: 'call';
       readonly callee: string;
       readonly args: readonly IrExpr[];
+      /**
+       * Whether the backend must round this call's result to `f32`.
+       *
+       * Set only on a capability whose signature is polymorphic in its float width and whose call
+       * resolved to single precision. Such a capability is implemented once, in double, so the
+       * narrowing has to happen somewhere — and the call site is where this language already puts
+       * it, since `a * b` on `f32` emits its own rounding rather than assuming its operands were
+       * rounded for it.
+       *
+       * A flag rather than a node because it is a property of *this* call and not a computation: a
+       * wrapper node would have to be typed, and its type is the call's type.
+       */
+      readonly rounds: boolean;
       readonly type: IrType;
       readonly span: Span;
     }

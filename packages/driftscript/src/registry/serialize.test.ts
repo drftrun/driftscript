@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createRegistry, defineCapability } from './capability.ts';
 import { registryFromJson, serializeRegistry } from './serialize.ts';
+import { registerStd } from '../std/index.ts';
 
 const built = () => {
   const registry = createRegistry();
@@ -27,6 +28,19 @@ describe('a registry as data', () => {
     const after = registryFromJson(JSON.parse(JSON.stringify(serializeRegistry(before))));
     expect(after.all()).toEqual(before.all());
     expect(after.types()).toEqual(before.types());
+  });
+
+  it('carries a `float` signature across, because a width variable is still just a name', () => {
+    /* The whole reason `float` is spelled as a `TypeName` rather than modelled as a structure: a
+       language server reads this file in a process that cannot import the host that wrote it, and
+       a form that needed reconstructing would be a form that could arrive half-understood. */
+    const before = createRegistry();
+    registerStd(before);
+    const after = registryFromJson(JSON.parse(JSON.stringify(serializeRegistry(before))));
+    const sqrt = after.get('std/math', 'sqrt');
+    expect(sqrt?.params.map((p) => p.type)).toEqual(['float']);
+    expect(sqrt?.returns).toBe('float');
+    expect(after.all()).toEqual(before.all());
   });
 
   it('carries the fields hover and completion read', () => {
