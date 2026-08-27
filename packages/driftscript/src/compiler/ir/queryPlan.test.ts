@@ -45,13 +45,13 @@ fn f(world: World) {
     const loop = loopIn(`
 component Hunger { value: f64 = 0 }
 
-fn bump(e: Entity) {
+fn bump(world: World, e: Entity) {
     e.Hunger.value = 1
 }
 
 fn f(world: World) {
     for e in query<Hunger>() {
-        bump(e)
+        bump(world, e)
     }
 }
 `);

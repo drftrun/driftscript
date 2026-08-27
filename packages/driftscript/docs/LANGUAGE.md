@@ -286,6 +286,25 @@ from a pool and is given back when the walk is exhausted, so leaving early has t
 anyway — the remaining entities are stepped over without the body running. It costs a step per
 remaining entity and it is what keeps `break` from leaking a cursor per frame.
 
+### Reaching a component through a handle
+
+`e.Component.field` works on any entity handle, not only on one a query loop bound:
+
+```drs
+fn bump(world: World, who: Entity) -> f64 {
+    who.Placement.x = who.Placement.x + 1
+    return who.Placement.x
+}
+```
+
+Inside a query loop this is a view and an index. Outside one it compiles to `ecs.read` and
+`ecs.write` — the same calls you would otherwise write by hand with the component and field as
+strings, except that here both names are checked: a misspelled field is an error at the line that
+wrote it rather than a zero at runtime.
+
+**It needs a world in scope**, because that is what the read runs against. A `system` has one; a
+function takes a `World` parameter.
+
 A name belongs to the block it was declared in. A function that declares a return type must return
 on every path — a trailing `if` without an `else` is an error, because the path where the condition
 is false reaches the end.

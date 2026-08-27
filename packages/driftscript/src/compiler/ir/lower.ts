@@ -116,6 +116,8 @@ const ECS_MODULE = 'drift/ecs';
 const ECS_ALIAS = 'ecs';
 
 const VOID_IR: IrType = { kind: 'void' };
+/** The type a component and field name carry into an `ecs.read` or `ecs.write` call. */
+const STRING_IR: IrType = { kind: 'string' };
 
 /**
  * A module's constants, sorted so that each is written after everything it names.
@@ -293,6 +295,15 @@ class Lowering {
             span: node.span,
           };
         }
+        /*
+         * A handle no loop bound reads through `drift/ecs` rather than as a property.
+         *
+         * Falling through to `field` below is what this repairs: `who.Placement.x` outside a query loop
+         * emitted `who.Placement.x`, a property read of a number, which type-checked and threw. See
+         * `CheckResult.handleComponents`.
+         */
+        const byHandle = this.handleRead(node);
+        if (byHandle !== null) return byHandle;
         return {
           kind: 'field',
           target: this.expr(node.target),
@@ -412,6 +423,64 @@ class Lowering {
    * a stack of them: the component named has to belong to the loop that bound *that* name, and a
    * nested loop does not take the outer binding's components away.
    */
+  /**
+   * `<handle>.<Component>.<field>` as an `ecs.read`, or null when this is not that shape.
+   *
+   * Built as an ordinary call rather than as a node of its own, because that is all it is: the
+   * backend already emits a dotted callee through the bound namespace, so there is nothing for a
+   * new IR kind to carry that a call does not.
+   */
+  private handleRead(node: Extract<Expr, { kind: 'member' }>): IrExpr | null {
+    if (node.target.kind !== 'member') return null;
+    const world = this.checked.handleComponents.get(node.target);
+    if (world === undefined) return null;
+    const type = this.typeOf(node);
+    return {
+      kind: 'call',
+      callee: `${ECS_ALIAS}.read`,
+      args: [
+        { kind: 'local', name: world, type: { kind: 'data', name: 'World' }, span: node.span },
+        this.expr(node.target.target),
+        { kind: 'const', value: node.target.name, type: STRING_IR, span: node.span },
+        { kind: 'const', value: node.name, type: STRING_IR, span: node.span },
+      ],
+      rounds: false,
+      type,
+      span: node.span,
+    };
+  }
+
+  /**
+   * `<handle>.<Component>.<field> = v` as an `ecs.write`, or null when this is not that shape.
+   *
+   * A statement rather than an expression, because a write through a handle is a call and there is
+   * nothing to assign to — which is exactly why the old fall-through was wrong: it produced
+   * `who.Placement.x = v`, an assignment to a property of a number, which throws.
+   */
+  private handleWrite(target: Expr, value: Expr): IrStmt | null {
+    if (target.kind !== 'member' || target.target.kind !== 'member') return null;
+    const world = this.checked.handleComponents.get(target.target);
+    if (world === undefined) return null;
+    return {
+      kind: 'expr',
+      expr: {
+        kind: 'call',
+        callee: `${ECS_ALIAS}.write`,
+        args: [
+          { kind: 'local', name: world, type: { kind: 'data', name: 'World' }, span: target.span },
+          this.expr(target.target.target),
+          { kind: 'const', value: target.target.name, type: STRING_IR, span: target.span },
+          { kind: 'const', value: target.name, type: STRING_IR, span: target.span },
+          this.expr(value),
+        ],
+        rounds: false,
+        type: VOID_IR,
+        span: target.span,
+      },
+      span: target.span,
+    };
+  }
+
   private componentAccess(node: Expr): { depth: number; view: number } | null {
     if (node.kind !== 'member' || node.target.kind !== 'ident') return null;
     const binding = node.target.name;
@@ -430,13 +499,16 @@ class Lowering {
         const value = this.expr(node.value);
         return { kind: 'let', name: node.name, value, type: value.type, span: node.span };
       }
-      case 'assign':
+      case 'assign': {
+        const written = this.handleWrite(node.target, node.value);
+        if (written !== null) return written;
         return {
           kind: 'assign',
           target: this.expr(node.target),
           value: this.expr(node.value),
           span: node.span,
         };
+      }
       case 'forQuery': {
         /*
          * The plan is read rather than re-derived. Only the checker knows what an `entity` term
@@ -931,7 +1003,10 @@ export function lower(
    * The namespace is added for the same reason. Generated code reaches a host through
    * `__bind($host)` and nothing else, so without an entry there is no `ecs` to call.
    */
-  if (checked.queries.size > 0) {
+  /* A handle-based component access is a use of `drift/ecs` for exactly the reason a query loop is:
+     it compiles to `ecs.read` and `ecs.write`, so the module has the requirement and needs the
+     namespace bound whether or not the file imports anything from it. */
+  if (checked.queries.size > 0 || checked.handleComponents.size > 0) {
     if (!requires.includes(ECS_MODULE)) requires.push(ECS_MODULE);
     if (!namespaces.some((n) => n.module === ECS_MODULE)) {
       namespaces.push({ alias: ECS_ALIAS, module: ECS_MODULE });

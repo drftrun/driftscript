@@ -209,19 +209,27 @@ fn f(world: World) {
   });
 
   it('takes `Entity` as a parameter type, so a helper can be handed a handle', () => {
-    /* Without a writable name for the type there is no helper that can touch a component, and
-       propagating component access through the call graph would have nothing to propagate. */
+    /*
+     * Without a writable name for the type there is no helper that can touch a component, and
+     * propagating component access through the call graph would have nothing to propagate.
+     *
+     * **The helper takes a `World` as of 1.6.0, and it had to.** A handle no query loop bound
+     * reaches its components through `drift/ecs`, so there has to be a world to reach them from.
+     * Before this the body compiled to `e.Hunger.value = 1` — a property assignment on a number,
+     * which type-checked, linked, and threw the moment it ran. The inference this test is about was
+     * always right; the code under it was not.
+     */
     expect(
       errorsIn(`
 component Hunger { value: f64 = 0 }
 
-fn bump(e: Entity) {
+fn bump(world: World, e: Entity) {
     e.Hunger.value = 1
 }
 
 fn f(world: World) {
     for e in query<Hunger>() {
-        bump(e)
+        bump(world, e)
     }
 }
 `),
@@ -435,13 +443,13 @@ system Feeder {
       allIn(`
 component Hunger { value: f64 = 0 }
 
-fn bump(e: Entity) {
+fn bump(world: World, e: Entity) {
     e.Hunger.value = 1
 }
 
 system Feeder {
     writes Hunger
-    update { for e in query<Hunger>() { bump(e) } }
+    update { for e in query<Hunger>() { bump(world, e) } }
 }
 `),
     ).toEqual([]);
@@ -465,13 +473,13 @@ system Feeder {
     const errors = errorsIn(`
 component Hunger { value: f64 = 0 }
 
-fn bump(e: Entity) {
+fn bump(world: World, e: Entity) {
     e.Hunger.value = 1
 }
 
 system Feeder {
     reads Hunger
-    update { for e in query<Hunger>() { bump(e) } }
+    update { for e in query<Hunger>() { bump(world, e) } }
 }
 `);
     expect(errors[0]?.code).toBe('DS0288');
@@ -633,7 +641,7 @@ system Feeder {
 component Hunger { value: f64 = 0 }
 component Health { current: f64 = 0 }
 
-fn bump(e: Entity) {
+fn bump(world: World, e: Entity) {
     e.Hunger.value = 1
 }
 
@@ -644,7 +652,7 @@ fn look(e: Entity) -> f64 {
 system Feeder {
     update {
         for e in query<Hunger, Health>() {
-            bump(e)
+            bump(world, e)
             let seen = look(e)
         }
     }

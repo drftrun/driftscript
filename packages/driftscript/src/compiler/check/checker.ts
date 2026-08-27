@@ -100,6 +100,22 @@ export interface CheckResult {
   /** Every module constant this file declares, by name. Lowering emits one `const` for each. */
   readonly constants: ReadonlyMap<string, Type>;
   /**
+   * Component accesses on a handle no query loop bound, and the world each runs against.
+   *
+   * **These used to compile to a property read of a number.** `who.Placement.x` inside a query loop is a
+   * view and an index; outside one, `componentAccess` found no loop and lowering fell through to an
+   * ordinary field access — so a form the checker accepted emitted JavaScript that threw
+   * `Cannot read properties of undefined`. It type-checked, it linked, and it was wrong.
+   *
+   * They lower to `ecs.read` and `ecs.write` instead, which is what a consumer was writing by hand
+   * with the component and field as strings — the same calls, with the names checked.
+   *
+   * The world is recorded per access rather than looked up while lowering, because only the checker
+   * knows what was in scope where; a lowering that guessed `world` would be right inside a system
+   * and wrong in a function that named its parameter something else.
+   */
+  readonly handleComponents: ReadonlyMap<Expr, string>;
+  /**
    * Each query loop's resolved plan, keyed by its statement.
    *
    * Lowering reads this rather than re-deriving it: only the checker knows what an `entity` term
@@ -309,6 +325,9 @@ class Checker {
 
   /** This file's module constants, by name, once their values have been typed. */
   private readonly constants = new Map<string, Type>();
+
+  /** See `CheckResult.handleComponents`. Keyed by the `<handle>.<Component>` member. */
+  private readonly handleComponents = new Map<Expr, string>();
 
   /**
    * The world a query loop in this body would run against, or null when there is none.
@@ -651,6 +670,7 @@ class Checker {
       enums: this.enums,
       functions: this.functions,
       constants: this.constants,
+      handleComponents: this.handleComponents,
       queries: this.queries,
       access: this.access,
       rounded: this.rounded,
@@ -2037,7 +2057,28 @@ class Checker {
         const target = this.checkExpr(expr.target, scope);
         if (target.kind === 'entity') {
           const binding = expr.target.kind === 'ident' ? expr.target.name : null;
-          return this.record(expr, this.componentOf(binding, expr.name, expr.span));
+          const component = this.componentOf(binding, expr.name, expr.span);
+          /*
+           * A handle no query loop bound reaches its components through `drift/ecs`, so it needs a
+           * world — the same requirement a query has, refused in the same words.
+           *
+           * `queryRequirements` holding the binding is exactly what says a loop bound it: that map
+           * is written when a loop opens and taken back when it closes.
+           */
+          if (component.kind !== 'error' && (binding === null || !this.queryRequirements.has(binding))) {
+            if (this.worldInScope === null) {
+              this.report(
+                'DS0295',
+                'reaching a component through a handle needs a world to read it from and there ' +
+                  'is none in scope. A `system` has one; anywhere else, declare a `World` ' +
+                  'parameter and it runs against that.',
+                expr.span,
+              );
+            } else {
+              this.handleComponents.set(expr, this.worldInScope);
+            }
+          }
+          return this.record(expr, component);
         }
         return this.record(expr, this.fieldOf(target, expr.name, expr.span));
       }

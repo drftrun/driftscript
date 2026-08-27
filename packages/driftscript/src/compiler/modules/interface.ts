@@ -107,6 +107,7 @@ export function interfacesOf(graph: ResolvedGraph): ReadonlyMap<string, Publishe
           queries: new Map(),
           access: new Map(),
           rounded: new Set(),
+          handleComponents: new Map(),
           diagnostics: [],
         },
         from.records,

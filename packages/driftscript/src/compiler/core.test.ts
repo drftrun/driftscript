@@ -714,3 +714,82 @@ describe('a list', () => {
   });
 });
 
+describe('a component reached through a handle', () => {
+  /** Compile, then bind a world that records what was read and written. */
+  const withWorld = async (source: string) => {
+    const result = compile(source);
+    expect(result.diagnostics).toEqual([]);
+    const mod = (await import(
+      /* @vite-ignore */ `data:text/javascript;base64,${btoa(result.code)}`
+    )) as Record<string, (...args: never[]) => unknown> & {
+      __bind: (host: Record<string, unknown>) => void;
+    };
+    const store = new Map<string, number>();
+    mod.__bind({
+      'drift/ecs': {
+        read: (_w: unknown, e: number, c: string, f: string) => store.get(`${e}.${c}.${f}`) ?? 0,
+        write: (_w: unknown, e: number, c: string, f: string, v: number) => {
+          store.set(`${e}.${c}.${f}`, v);
+        },
+      },
+    });
+    return { mod, store };
+  };
+
+  it('reads and writes through `drift/ecs`, where it used to emit a property of a number', async () => {
+    /*
+     * **The bug this closes emitted `who.Placement.x = 1` and threw.**
+     *
+     * A component access resolves to a view and an index inside a query loop. Outside one there was
+     * no loop to resolve against, and lowering fell through to an ordinary field access — so the
+     * form the checker accepted, the linker passed and the tests exercised for its *inference*
+     * produced JavaScript that read a property of a number. Nothing ran it.
+     *
+     * It is also what a consumer was writing by hand as `ecs.write(world, e, "Placement", "x", x)`,
+     * one field at a time, with the component and field as strings a typo could not be caught in.
+     */
+    const { mod, store } = await withWorld(
+      'component Placement {\n    x: f64 = 0\n}\n\n' +
+        'fn bump(world: World, who: Entity) -> f64 {\n' +
+        '    who.Placement.x = who.Placement.x + 1\n    return who.Placement.x\n}\n',
+    );
+    expect(mod.bump({} as never, 12345 as never)).toBe(1);
+    expect(mod.bump({} as never, 12345 as never)).toBe(2);
+    expect(store.get('12345.Placement.x')).toBe(2);
+  });
+
+  it('catches the typo the string calls could not', () => {
+    /* The cost a consumer named: `"Placement"` and `"x"` are strings, so a misspelling is a runtime
+       zero rather than a compile error. Written this way both are checked. */
+    const placement = 'component Placement {\n    x: f64 = 0\n}\n\n';
+    expect(
+      codesOf(`${placement}fn f(world: World, w: Entity) -> f64 {\n    return w.Placement.xx\n}\n`),
+    ).toContain('DS0203');
+    expect(
+      codesOf(`${placement}fn f(world: World, w: Entity) -> f64 {\n    return w.Mets.x\n}\n`),
+    ).toContain('DS0286');
+  });
+
+  it('needs a world to reach it from, and says so', () => {
+    /* The one case that is refused rather than fixed. There is nowhere for `ecs.read` to read
+       from, and a helper that wants one takes a `World` parameter — which is what the engine's own
+       capabilities have always required. */
+    const result = compile(
+      'component Placement {\n    x: f64 = 0\n}\n\nfn f(w: Entity) -> f64 {\n    return w.Placement.x\n}\n',
+    );
+    expect(result.diagnostics[0]?.code).toBe('DS0295');
+    expect(result.diagnostics[0]?.message).toContain('World');
+  });
+
+  it('pulls in `drift/ecs`, because that is what it compiles to', () => {
+    const result = compile(
+      'component Placement {\n    x: f64 = 0\n}\n\n' +
+        'fn f(world: World, w: Entity) -> f64 {\n    return w.Placement.x\n}\n',
+    );
+    /* The form is a use of the capability, so the requirement is the module's whether or not the
+       file imports anything from it — the same call the query loop makes. */
+    expect(result.code).toContain('__bind');
+    expect(result.metadata.requires).toContain('drift/ecs');
+  });
+});
+
