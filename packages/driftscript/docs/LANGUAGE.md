@@ -165,6 +165,25 @@ have meant, so offering `checked`, `clamp` and `wrap` here would be offering two
 exist. It has to be written even when it loses nothing: the widening direction is exact, and it is
 still not implicit, because a rule with an exception is a rule a reader has to keep a list for.
 
+### Module constants
+
+A `let` at the top of a file is a constant the whole file can name, and another file can import:
+
+```drs
+let MINUTE = 60
+let SECONDS_PER_HOUR = 60 * MINUTE
+let LABEL = "hour"
+```
+
+Its value is a number, a string, a `bool`, arithmetic over those, or another constant. **A call is
+not allowed**: a module is evaluated before its host is bound, so there would be nothing to call.
+
+Declaration order carries no meaning here either — `SECONDS_PER_HOUR` above may be written before
+`MINUTE`, and a cycle between two constants is an error naming both.
+
+**`var` is refused at this level.** Module-level mutable state is state a hot reload has to migrate,
+a replay has to restore, and two systems can race on. A constant has none of those problems.
+
 ## Expressions
 
 Precedence, loosest first:
@@ -217,6 +236,26 @@ while count < 10 {
 
 return value
 ```
+
+`break` leaves the innermost loop and `continue` skips to its next turn. There are no labels, so a
+jump always means the loop it is written in:
+
+```drs
+for e in query<Hunger>() {
+    if e.Hunger.value <= 0 {
+        continue
+    }
+    if e.Hunger.value > 100 {
+        break
+    }
+    e.Hunger.value = e.Hunger.value - 1
+}
+```
+
+**`break` out of a query loop finishes walking the cursor before it leaves.** A query's cursor comes
+from a pool and is given back when the walk is exhausted, so leaving early has to reach that point
+anyway — the remaining entities are stepped over without the body running. It costs a step per
+remaining entity and it is what keeps `break` from leaking a cursor per frame.
 
 A name belongs to the block it was declared in. A function that declares a return type must return
 on every path — a trailing `if` without an `else` is an error, because the path where the condition

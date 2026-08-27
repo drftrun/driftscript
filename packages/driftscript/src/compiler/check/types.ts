@@ -90,6 +90,23 @@ export function primitive(name: string): Type {
   return { kind: 'primitive', name };
 }
 
+/**
+ * A primitive type name, as either path into the checker resolves it.
+ *
+ * **`Entity` lexes as a primitive and is not a `primitive` Type**, and that mismatch is the whole
+ * reason this function exists rather than two call sites doing it. A written annotation resolved it
+ * correctly and a *capability signature* did not: `resolveTypeName` fell through to
+ * `primitive('Entity')`, so a host that returned a handle got a type on which `.Health` was refused
+ * with "`Entity` has no fields" and which the `mut` exemption did not recognise. The two paths
+ * disagreed about what one word meant, and only one of them was ever exercised.
+ *
+ * `types.ts` had predicted exactly this — the `entity` kind's own comment says `drift/ecs` should
+ * return the type "once it can name it". It could name it; naming it produced something broken.
+ */
+export function primitiveType(name: string): Type {
+  return name === 'Entity' ? { kind: 'entity' } : primitive(name);
+}
+
 export function option(inner: Type): Type {
   return { kind: 'option', inner };
 }

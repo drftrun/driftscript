@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parse } from '../parser.ts';
 import { check } from './checker.ts';
 import { collectEntityModel, inferAccess } from './entities.ts';
+import { createRegistry, defineCapability } from '../../registry/capability.ts';
 
 /** Parse and check a source, returning only the errors a reader would see. */
 const allIn = (source: string): { code: string; severity: string; message: string }[] => {
@@ -940,5 +941,79 @@ prefab Back {
 }
 `),
     ).toEqual([]);
+  });
+});
+
+describe('a handle a host hands back', () => {
+  /**
+   * A registry whose capability returns `Entity`, which is the shape `types.ts` asked for by name.
+   *
+   * The `entity` kind's own comment says a handle is assignable *to* `f64` and not from one, and
+   * that what would make the asymmetry wrong is "a capability that hands back a handle as an `f64`
+   * and expects it to keep working as one — which is why `drift/ecs` should return this type once
+   * it can name it". This is that test.
+   */
+  const registry = () => {
+    const r = createRegistry();
+    r.addType({ module: 'drift/ecs', name: 'World', doc: 'A world.' });
+    r.add(
+      defineCapability({
+        module: 'drift/ecs',
+        name: 'nearest',
+        signature: 'fn(world: World, x: f32) -> Entity',
+        params: [
+          { name: 'world', type: 'World' },
+          { name: 'x', type: 'f32' },
+        ],
+        returns: 'Entity',
+        effects: ['ecs.read'],
+        deterministic: true,
+        doc: 'The nearest entity.',
+        implementation: 'World.nearest',
+      }),
+    );
+    return r;
+  };
+
+  const errorsWithRegistry = (source: string): { code: string; message: string }[] => {
+    const parsed = parse(source, 'm.drs');
+    const parseErrors = parsed.diagnostics.filter((d) => d.severity === 'error');
+    if (parseErrors.length > 0) {
+      return parseErrors.map((d) => ({ code: d.code, message: d.message }));
+    }
+    return check(parsed.module, 'm.drs', registry())
+      .diagnostics.filter((d) => d.severity === 'error')
+      .map((d) => ({ code: d.code, message: d.message }));
+  };
+
+  const SOURCE =
+    'import { nearest } from "drift/ecs"\n\n' +
+    'component Health {\n    current: f64 = 0\n}\n\n' +
+    'system S {\n    reads Health\n    writes Health\n\n    update {\n' +
+    '        let who = ecs.nearest(world, 1)\n' +
+    '        who.Health.current = 1\n' +
+    '    }\n}\n';
+
+  it('is a handle, so a component reads through it', () => {
+    /* Until 1.6.0 this was `DS0203 \`Entity\` has no fields`, because the registry path resolved
+       the name to a `primitive` rather than to the handle kind. The two resolvers disagreed about
+       one word, and only the written-annotation one had ever been exercised. */
+    expect(errorsWithRegistry(SOURCE)).toEqual([]);
+  });
+
+  it('needs no `mut`, because a handle is an address rather than a container', () => {
+    /* The second half of the same bug: `checkWritable` exempts the `entity` kind, so a handle typed
+       as a primitive was also refused with `DS0201` for a keyword that would have described the
+       wrong thing. */
+    expect(errorsWithRegistry(SOURCE).map((e) => e.code)).not.toContain('DS0201');
+  });
+
+  it('still refuses an arbitrary number where a handle is wanted', () => {
+    /* The asymmetry survives the fix. A handle crosses into an `f64`; an `f64` does not become a
+       handle, or the generational check would be back where it started. */
+    const source =
+      'component Health {\n    current: f64 = 0\n}\n\n' +
+      'fn f(n: f64) {\n    n.Health.current = 1\n}\n';
+    expect(errorsWithRegistry(source).map((e) => e.code)).toContain('DS0203');
   });
 });

@@ -250,6 +250,9 @@ class Parser {
       if (this.check('keyword', 'import')) {
         const parsed = this.parseImport();
         if (parsed !== null) imports.push(parsed);
+      } else if (this.check('keyword', 'let') || this.check('keyword', 'var')) {
+        const parsed = this.parseModuleConst();
+        if (parsed !== null) decls.push(parsed);
       } else if (this.check('keyword', 'data')) {
         const parsed = this.parseData(annotations);
         if (parsed !== null) decls.push(parsed);
@@ -1598,6 +1601,17 @@ class Parser {
       return this.parseLet(token.text === 'var');
     }
     if (token.kind === 'keyword' && token.text === 'return') return this.parseReturn();
+    if (token.kind === 'keyword' && (token.text === 'break' || token.text === 'continue')) {
+      /* No label and no value. A labelled break needs a name on the loop, and nothing has asked for
+         one; adding it later is a change to this line and to the checker's loop stack, which is why
+         the node carries a word instead of two kinds. */
+      this.next();
+      return {
+        kind: 'loopJump',
+        word: token.text,
+        span: { start: token.start, end: token.end },
+      };
+    }
     if (token.kind === 'keyword' && token.text === 'if') return this.parseIf();
     if (token.kind === 'keyword' && token.text === 'while') return this.parseWhile();
     if (token.kind === 'keyword' && token.text === 'for') return this.parseForQuery();
@@ -1648,6 +1662,61 @@ class Parser {
     }
 
     return { kind: 'expr', expr: target, span: target.span };
+  }
+
+  /**
+   * `let NAME = value` or `let NAME: Type = value`, at the top of a file.
+   *
+   * Shares nothing with `parseLet` beyond its shape, because the two produce different nodes and the
+   * refusal below belongs only to this one: a **`var` here is reported rather than parsed**, and
+   * reported in words that say what is wrong with it. Falling through to "expected a declaration"
+   * would have named the keyword and not the reason, and the reason is the whole point — module
+   * state is what a hot reload has to migrate and a replay has to restore.
+   */
+  private parseModuleConst(): Decl | null {
+    const keyword = this.peek();
+    const start = this.next().start;
+
+    if (keyword.text === 'var') {
+      this.report(
+        'DS0137',
+        'a module-level binding is always `let`. `var` here would be state the whole file can ' +
+          'write, which a hot reload has to migrate and a replay has to restore.',
+        { start: keyword.start, end: keyword.end },
+      );
+      this.resynchronise();
+      return null;
+    }
+
+    const name = this.acceptIdentLike();
+    if (name === null) {
+      const found = this.peek();
+      this.report('DS0119', 'expected a name after `let`', { start: found.start, end: found.end });
+      this.resynchronise();
+      return null;
+    }
+
+    let type: TypeRef | undefined;
+    if (this.accept('punct', ':') !== null) {
+      const parsed = this.parseTypeRef();
+      if (parsed === null) {
+        this.resynchronise();
+        return null;
+      }
+      type = parsed;
+    }
+
+    if (this.expect('punct', '=', 'DS0120') === null) {
+      this.resynchronise();
+      return null;
+    }
+    const value = this.parseExpr();
+    if (value === null) {
+      this.resynchronise();
+      return null;
+    }
+
+    return { kind: 'const', name: name.text, type, value, span: { start, end: value.span.end } };
   }
 
   private parseLet(mutable: boolean): Stmt | null {

@@ -162,6 +162,18 @@ export type Stmt =
       readonly span: Span;
     }
   | { readonly kind: 'return'; readonly value?: Expr; readonly span: Span }
+  /**
+   * `break` and `continue`, which leave a loop or skip to its next turn.
+   *
+   * Both words were reserved from the first lexer and had no form for as long as the language had
+   * only `while`. What made them worth building is `for … in query`: a consumer reported writing one
+   * more `else` for every case that would have been skipped, and inside a query loop nested in an
+   * `update` the indentation is what a reader is fighting.
+   *
+   * One node with a `word` rather than two kinds, because everything downstream treats them as the
+   * same thing — a jump out of the innermost enclosing loop — and differs only in where it jumps to.
+   */
+  | { readonly kind: 'loopJump'; readonly word: 'break' | 'continue'; readonly span: Span }
   | {
       readonly kind: 'if';
       readonly condition: Expr;
@@ -544,8 +556,31 @@ export interface ImportDecl {
   readonly span: Span;
 }
 
+/**
+ * `let SECONDS_PER_HOUR = 3600` at the top of a file.
+ *
+ * **A `let` with no function around it**, which the language did not have: `let` was a statement, so
+ * a value shared by a whole file had to be written as a `@pure fn` returning it. A consumer reported
+ * the cost as a reading problem rather than a speed one — a table of twelve constants became twelve
+ * functions, and the place you go to change a number stopped looking like a table of numbers.
+ *
+ * **`var` is refused at this level and that is not an oversight.** Module-level mutable state is
+ * state a hot reload has to migrate, a replay has to restore and two systems can race on, none of
+ * which this language has an answer for. A constant has none of those problems because it cannot
+ * change.
+ */
+export interface ConstDecl {
+  readonly kind: 'const';
+  readonly name: string;
+  /** The written annotation, or absent when the value's own type is taken. */
+  readonly type?: TypeRef;
+  readonly value: Expr;
+  readonly span: Span;
+}
+
 export type Decl =
   | DataDecl
+  | ConstDecl
   | FnDecl
   | EnumDecl
   | TaskDecl

@@ -168,6 +168,29 @@ export type IrStmt =
     }
   | { readonly kind: 'assign'; readonly target: IrExpr; readonly value: IrExpr; readonly span: Span }
   | { readonly kind: 'return'; readonly value: IrExpr | null; readonly span: Span }
+  /**
+   * `break` or `continue`, out of the innermost enclosing loop.
+   *
+   * **`drain` is the cursor a `break` has to finish walking before it leaves**, and it is the whole
+   * of what makes this node more than a keyword. A query loop's cursor comes from a pool and is
+   * given back when `ecs.next` returns a negative — there is no release call in the protocol
+   * generated code speaks — so a `break` that simply left would keep the cursor forever, and a
+   * system doing it once a frame would exhaust the pool. Draining calls `next` until it is spent,
+   * which returns the cursor by the only route a host has agreed to.
+   *
+   * It is null for a `while`, and for a `continue` in any loop: a `continue` still reaches
+   * exhaustion the ordinary way.
+   *
+   * **What would make this wrong** is a host protocol that grows a release call, at which point
+   * this becomes an O(1) call instead of a walk of the remainder — a change to the emitter and to
+   * nothing else, which is why the depth is carried rather than the drain being emitted here.
+   */
+  | {
+      readonly kind: 'loopJump';
+      readonly word: 'break' | 'continue';
+      readonly drain: number | null;
+      readonly span: Span;
+    }
   | {
       readonly kind: 'if';
       readonly condition: IrExpr;
@@ -446,6 +469,15 @@ export interface IrModule {
   readonly handlers: readonly IrHandler[];
   readonly states: readonly IrState[];
   /**
+   * The module's constants, **already in dependency order**.
+   *
+   * Sorted here rather than by the backend, because the language promises that declaration order
+   * carries no meaning and JavaScript's `const` disagrees: a `const` naming one declared below it
+   * throws at module load, before anything a consumer wrote has run. The checker refused a cycle,
+   * so an order always exists.
+   */
+  readonly constants: readonly IrConst[];
+  /**
    * The logical modules this source imported, in source order.
    *
    * This is what the linker checks against a target manifest, and what `driftscript capabilities`
@@ -463,6 +495,13 @@ export interface IrModule {
    * refused as a capability no target provides.
    */
   readonly imports: readonly IrImport[];
+}
+
+export interface IrConst {
+  readonly name: string;
+  readonly value: IrExpr;
+  readonly type: IrType;
+  readonly span: Span;
 }
 
 export interface IrImport {

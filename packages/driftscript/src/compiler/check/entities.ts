@@ -375,6 +375,9 @@ function directAccess(
         return;
       case 'become':
         return;
+      case 'loopJump':
+        /* No expression, so leaving a loop reads and writes no component. */
+        return;
       default:
         /* Exhaustive for the same reason `check/effects.ts` is: a statement kind this walk skips
            is a statement whose component access is invisible, and an undeclared write then reaches

@@ -144,3 +144,39 @@ describe('a base in another module', () => {
   });
 
 });
+
+describe('an imported module constant', () => {
+  const TIMING = 'let SECONDS_PER_HOUR = 3600\nlet MINUTE = 60\n';
+
+  it('crosses a file boundary the way a function does', () => {
+    /* Which is the point of it: the `@pure fn` this replaces was importable, so a constant that was
+       not would have solved how one file reads and left every consumer writing the function. */
+    const result = compile(
+      'import { SECONDS_PER_HOUR } from "./timing"\n\n' +
+        'fn hours(s: f32) -> f32 {\n    return s / SECONDS_PER_HOUR\n}\n',
+      { '/a/timing.drs': TIMING },
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('emits a real import, so the value is not copied into the dependent', () => {
+    const result = compile(
+      'import { SECONDS_PER_HOUR } from "./timing"\n\n' +
+        'fn hours(s: f32) -> f32 {\n    return s / SECONDS_PER_HOUR\n}\n',
+      { '/a/timing.drs': TIMING },
+    );
+    expect(result.code).toContain('import { SECONDS_PER_HOUR }');
+    /* Not inlined: a copy would go stale the moment the other file changed, and a hot reload would
+       have two answers for one number. */
+    expect(result.code).not.toContain('3600');
+  });
+
+  it('is suggested when an import misspells it', () => {
+    const result = compile('import { SECONDS_PER_HOURS } from "./timing"\n', {
+      '/a/timing.drs': TIMING,
+    });
+    expect(result.diagnostics[0].code).toBe('DS0502');
+    expect(result.diagnostics[0].message).toContain('SECONDS_PER_HOUR');
+  });
+});
+

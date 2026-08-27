@@ -267,6 +267,9 @@ export function rewriteStmts(stmts: readonly IrStmt[], bound: ReadonlySet<string
         return { ...stmt, args: stmt.args.map((a) => rewriteExpr(a, bound)) };
       case 'become':
         return stmt;
+      case 'loopJump':
+        /* A keyword and a cursor depth, neither of which can name a task local. */
+        return stmt;
       case 'emit':
         return {
           ...stmt,
@@ -283,6 +286,36 @@ export function rewriteStmts(stmts: readonly IrStmt[], bound: ReadonlySet<string
 }
 
 /**
+ * Whether these statements contain a `break` or `continue` that belongs to an enclosing loop.
+ *
+ * **It does not descend into a nested loop**, because a jump inside one is that loop's business and
+ * becomes an ordinary JavaScript `break` in ordinary JavaScript. It does descend into `if`, `ifLet`
+ * and `scope`, which are not loops and do not catch a jump.
+ *
+ * This exists for one hazard, and the hazard is silent. A task's body becomes a `switch` inside a
+ * `for (;;)`, so a statement emitted as a bare `break` in that position **breaks the switch** — the
+ * state machine falls out of its dispatch and the task ends, with no error anywhere. So an `if`
+ * holding a jump has to be cut into blocks even when it holds no `await`, which is the only reason
+ * `blocksOf` cuts on anything other than suspension.
+ */
+function containsLoopJump(stmts: readonly IrStmt[]): boolean {
+  return stmts.some((stmt) => {
+    switch (stmt.kind) {
+      case 'loopJump':
+        return true;
+      case 'if':
+      case 'ifLet':
+        return containsLoopJump(stmt.then) || (stmt.otherwise !== null && containsLoopJump(stmt.otherwise));
+      case 'scope':
+        return containsLoopJump(stmt.body);
+      default:
+        /* `while` and `forQuery` included: a jump inside one is caught by it. */
+        return false;
+    }
+  });
+}
+
+/**
  * Cut a rewritten body into blocks.
  *
  * The first block is always index 0, which is where `start` leaves the frame pointing.
@@ -293,6 +326,11 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
     blocks.push({ stmts: [], terminator: { kind: 'done' } });
     return blocks.length - 1;
   };
+
+  /* The cut loops currently open, innermost last. A jump reaching this lowering always belongs to
+     one of them: a jump inside a loop that was *not* cut never gets here, because that loop was
+     pushed into a block whole and this walk does not descend into it. */
+  const loops: { head: number; exit: number }[] = [];
 
   const lower = (stmts: readonly IrStmt[], from: number): number => {
     let current = from;
@@ -331,7 +369,25 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
         continue;
       }
 
-      if (stmt.kind === 'if' && containsAwait([stmt])) {
+      if (stmt.kind === 'loopJump') {
+        const loop = loops[loops.length - 1];
+        /* No enclosing cut loop means the checker already refused this with `DS0238` and the module
+           will not be emitted. Staying total beats throwing on a body that is already wrong. */
+        if (loop !== undefined) {
+          blocks[current].terminator = {
+            kind: 'jump',
+            target: stmt.word === 'break' ? loop.exit : loop.head,
+          };
+          /* Anything after a jump is unreachable, for the reason `return` gives above: appending it
+             to a block already terminated would emit it before the jump rather than after. */
+          current = create();
+        }
+        continue;
+      }
+
+      /* Cut on a jump as well as on an await — see `containsLoopJump` for the `switch` that a bare
+         `break` would otherwise break instead of the loop. */
+      if (stmt.kind === 'if' && (containsAwait([stmt]) || (loops.length > 0 && containsLoopJump([stmt])))) {
         const thenBlock = create();
         const elseBlock = create();
         const join = create();
@@ -372,7 +428,11 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
           then: body,
           otherwise: exit,
         };
+        /* Pushed around the body only. A jump in the *condition* is not expressible, and one in a
+           sibling statement belongs to whatever encloses this loop rather than to it. */
+        loops.push({ head, exit });
         blocks[lower(stmt.body, body)].terminator = { kind: 'jump', target: head };
+        loops.pop();
         current = exit;
         continue;
       }

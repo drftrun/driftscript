@@ -27,6 +27,7 @@ import type {
   TypeRef,
   SystemDecl,
   PrefabDecl,
+  ConstDecl,
 } from '../ast.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
 import { FLOAT, type CapabilityRegistry } from '../../registry/capability.ts';
@@ -46,6 +47,7 @@ import {
   nameOf,
   option,
   primitive,
+  primitiveType,
   result,
   same,
 } from './types.ts';
@@ -82,6 +84,8 @@ export interface ImportedScope {
   readonly data: ReadonlyMap<string, Type>;
   readonly enums: ReadonlyMap<string, Type>;
   readonly functions: ReadonlyMap<string, FnSignature>;
+  /** Module constants, which cross a file boundary as an ordinary import like a function does. */
+  readonly constants: ReadonlyMap<string, Type>;
 }
 
 export interface CheckResult {
@@ -92,6 +96,8 @@ export interface CheckResult {
   /** Every declared enum, by name. */
   readonly enums: ReadonlyMap<string, Type>;
   readonly functions: ReadonlyMap<string, FnSignature>;
+  /** Every module constant this file declares, by name. Lowering emits one `const` for each. */
+  readonly constants: ReadonlyMap<string, Type>;
   /**
    * Each query loop's resolved plan, keyed by its statement.
    *
@@ -165,6 +171,31 @@ function isConstantExpr(expr: Expr): boolean {
 function takesWidthFromContext(expr: Expr): boolean {
   if (expr.kind === 'number') return true;
   return expr.kind === 'unary' && expr.op === '-' && takesWidthFromContext(expr.operand);
+}
+
+/** Every identifier a constant's value names, which is what decides the order they are typed in. */
+function constantReferences(expr: Expr): Set<string> {
+  const names = new Set<string>();
+  const walk = (node: Expr): void => {
+    switch (node.kind) {
+      case 'ident':
+        names.add(node.name);
+        return;
+      case 'unary':
+        walk(node.operand);
+        return;
+      case 'binary':
+        walk(node.left);
+        walk(node.right);
+        return;
+      default:
+        /* Every other form is refused by `refuseNonConstant`, so there is nothing under it that
+           could name a constant. */
+        return;
+    }
+  };
+  walk(expr);
+  return names;
 }
 
 /** A name bound in a body, and whether it may be written through. */
@@ -261,6 +292,9 @@ class Checker {
   /** Capability calls that resolved a `float` signature at `f32`. See `CheckResult.rounded`. */
   private readonly rounded = new Set<Expr>();
 
+  /** This file's module constants, by name, once their values have been typed. */
+  private readonly constants = new Map<string, Type>();
+
   /**
    * The world a query loop in this body would run against, or null when there is none.
    *
@@ -277,6 +311,19 @@ class Checker {
   private inState = false;
   /** Whether the statement being checked is inside a task, which is what `await` and `scope` need. */
   private inTask = false;
+
+  /**
+   * How many loops enclose the statement being checked, which is what `break` and `continue` need.
+   *
+   * A counter rather than a stack of loop kinds, because the language has no labels: a jump always
+   * means the innermost loop, so the only question is whether there is one. **What would make a
+   * stack necessary** is a labelled jump, which nothing has asked for.
+   *
+   * It is saved and restored around a body rather than incremented globally, because a `fn` called
+   * from inside a loop is not itself inside one — a jump in its body would have nowhere to go, and
+   * a counter that leaked across the call would have accepted it.
+   */
+  private loopDepth = 0;
   private readonly diagnostics: Diagnostic[] = [];
   private readonly file: string;
   private readonly registry: CapabilityRegistry | undefined;
@@ -322,6 +369,142 @@ class Checker {
     return this.functions.get(name) ?? this.imported?.functions.get(name);
   }
 
+  /** A module constant, this file's or an imported one's. Merged the way `lookupFn` merges. */
+  private lookupConst(name: string): Type | undefined {
+    return this.constants.get(name) ?? this.imported?.constants.get(name);
+  }
+
+  /**
+   * Type every module constant, in whatever order their references require.
+   *
+   * **Resolved by repetition rather than by a topological sort**, and the repetition is what
+   * detects a cycle. Each round types every constant whose references are already known; a round
+   * that resolves nothing means the ones left refer only to each other, and they are reported
+   * together. A sort would need its own cycle detection, which is this loop again with more code.
+   *
+   * **Declaration order carries no meaning here**, exactly as it carries none for a function.
+   * `LANGUAGE.md` promises that in one sentence with no exceptions, and a constant that had to be
+   * written above its user would have been the exception a reader keeps a list for. The emitter
+   * pays for it by writing them out in dependency order.
+   *
+   * A value is checked against a scope with no locals in it, because there are none: a module
+   * constant is evaluated where nothing is in scope but other constants.
+   */
+  private collectConstants(module: Module): void {
+    const pending = module.decls.filter((d): d is ConstDecl => d.kind === 'const');
+    const declared = new Set(pending.map((d) => d.name));
+
+    for (const decl of pending) {
+      if (this.constants.has(decl.name)) {
+        this.report('DS0242', `\`${decl.name}\` is declared twice in this module`, decl.span);
+        continue;
+      }
+      if (this.functions.has(decl.name) || this.lookupFn(decl.name) !== undefined) {
+        this.report(
+          'DS0242',
+          `\`${decl.name}\` is both a constant and a function; one name is one thing`,
+          decl.span,
+        );
+        continue;
+      }
+      this.constants.set(decl.name, ERROR);
+    }
+
+    /* `ERROR` above is a placeholder so that a name is *known* while the values are typed — it is
+       what stops a reference to a constant declared later reading as "not defined". Each is
+       replaced below by the type its value turned out to have. */
+    const unresolved = new Map(pending.map((d) => [d.name, d] as const));
+    const resolved = new Set<string>();
+
+    for (;;) {
+      let progressed = false;
+      for (const [name, decl] of unresolved) {
+        const references = constantReferences(decl.value);
+        /* A reference to something that is not a constant of this module is left to the value check
+           below, which reports it properly. Only *pending* names hold this one back. */
+        if ([...references].some((ref) => declared.has(ref) && !resolved.has(ref) && ref !== name)) {
+          continue;
+        }
+        this.checkConstantValue(decl);
+        resolved.add(name);
+        unresolved.delete(name);
+        progressed = true;
+      }
+      if (unresolved.size === 0) break;
+      if (!progressed) {
+        /* Every name in the cycle is reported, and each names the whole set, because a cycle read
+           as one edge sends a reader to whichever file the edge happened to point at. The same call
+           `resolveBases` makes for a record's base chain. */
+        const names = [...unresolved.keys()].sort();
+        for (const decl of unresolved.values()) {
+          this.report(
+            'DS0240',
+            `\`${decl.name}\` is defined in terms of itself, through ${names
+              .map((n) => `\`${n}\``)
+              .join(', ')}`,
+            decl.span,
+          );
+        }
+        break;
+      }
+    }
+  }
+
+  /**
+   * Type one constant's value and refuse anything that is not constant.
+   *
+   * **No calls, and that is the line.** A call could reach a capability, which would make a module's
+   * load order observable and would put a host call on the path a module is evaluated on — before
+   * `__bind` has run, so the namespace is not even there yet. Arithmetic over literals and other
+   * constants is the whole of what is allowed, which is what a table of numbers needs.
+   */
+  private checkConstantValue(decl: ConstDecl): void {
+    const declared = decl.type === undefined ? undefined : this.resolveTypeRef(decl.type);
+    if (!this.refuseNonConstant(decl.value, decl.name)) {
+      this.constants.set(decl.name, declared ?? ERROR);
+      return;
+    }
+
+    const actual = this.checkExpr(decl.value, new Scope(), declared);
+    if (declared !== undefined && !assignable(actual, declared)) {
+      this.report(
+        'DS0208',
+        `\`${decl.name}\` is declared \`${nameOf(declared)}\` but its value is \`${nameOf(actual)}\``,
+        decl.value.span,
+      );
+    }
+    this.constants.set(decl.name, declared ?? actual);
+  }
+
+  /** Walk a constant's value, reporting the first form that could not be evaluated at load. */
+  private refuseNonConstant(expr: Expr, name: string): boolean {
+    switch (expr.kind) {
+      case 'number':
+      case 'string':
+      case 'bool':
+        return true;
+      case 'unary':
+        return this.refuseNonConstant(expr.operand, name);
+      case 'binary':
+        return (
+          this.refuseNonConstant(expr.left, name) && this.refuseNonConstant(expr.right, name)
+        );
+      case 'ident':
+        /* Another constant, or a name the expression check will report as undefined. Either way it
+           is not a *form* this refuses. */
+        return true;
+      default:
+        this.report(
+          'DS0239',
+          `\`${name}\` is a module constant, so its value has to be a number, a string, a \`bool\`, ` +
+            'arithmetic over those, or another constant. A call cannot run here — a module is ' +
+            'evaluated before its host is bound.',
+          expr.span,
+        );
+        return false;
+    }
+  }
+
   private report(code: DiagnosticCode, message: string, span: Span): void {
     this.diagnostics.push({ code, severity: 'error', message, file: this.file, ...span });
   }
@@ -361,6 +544,9 @@ class Checker {
       else if (decl.kind === 'event') this.collectEvent(decl);
       else if (decl.kind === 'state') this.collectState(decl);
     }
+    /* After the signatures, so a name that is both a constant and a function is caught; before the
+       defaults, because a record's default may name a constant. */
+    this.collectConstants(module);
     /*
      * Record defaults are checked here; function bodies are not.
      *
@@ -376,6 +562,7 @@ class Checker {
       data: this.data,
       enums: this.enums,
       functions: this.functions,
+      constants: this.constants,
       types: this.types,
       diagnostics: this.diagnostics,
     };
@@ -426,6 +613,7 @@ class Checker {
       else if (decl.kind === 'event') this.collectEvent(decl);
       else if (decl.kind === 'state') this.collectState(decl);
     }
+    this.collectConstants(module);
     for (const decl of module.decls) {
       if (decl.kind === 'data') this.checkDataDefaults(decl);
       else if (decl.kind === 'fn') this.checkFn(decl);
@@ -447,6 +635,7 @@ class Checker {
       data: this.data,
       enums: this.enums,
       functions: this.functions,
+      constants: this.constants,
       queries: this.queries,
       access: this.access,
       rounded: this.rounded,
@@ -1274,7 +1463,25 @@ class Checker {
       case 'while': {
         this.checkCondition(stmt.condition, scope);
         const body = scope.child();
+        this.loopDepth += 1;
         for (const inner of stmt.body) this.checkStmt(inner, body);
+        this.loopDepth -= 1;
+        return;
+      }
+
+      case 'loopJump': {
+        if (this.loopDepth === 0) {
+          /*
+           * One code for both words, because it is one mistake: a jump with no loop to jump in.
+           * Two codes would split a consumer's grep across a distinction that changes nothing about
+           * what they have to do, which is the same call `checkConversion` makes for `DS0233`.
+           */
+          this.report(
+            'DS0238',
+            `\`${stmt.word}\` is only meaningful inside a loop, and there is none here`,
+            stmt.span,
+          );
+        }
         return;
       }
 
@@ -1368,7 +1575,9 @@ class Checker {
            back rather than leaving the inner loop's requirements attached to it. */
         const shadowed = this.queryRequirements.get(stmt.binding);
         this.queryRequirements.set(stmt.binding, readable);
+        this.loopDepth += 1;
         for (const inner of stmt.body) this.checkStmt(inner, body);
+        this.loopDepth -= 1;
         if (shadowed === undefined) this.queryRequirements.delete(stmt.binding);
         else this.queryRequirements.set(stmt.binding, shadowed);
         return;
@@ -1607,6 +1816,16 @@ class Checker {
     if (root.kind !== 'ident') return;
 
     const binding = scope.lookup(root.name);
+    if (binding === undefined && this.lookupConst(root.name) !== undefined) {
+      /* Reported here rather than falling through the `undefined` return below, which exists for a
+         name nothing declared — and a module constant is very much declared. */
+      this.report(
+        'DS0241',
+        `\`${root.name}\` is a module constant, so it cannot be written to`,
+        target.span,
+      );
+      return;
+    }
     if (binding === undefined || binding.mutable) return;
 
     /*
@@ -1678,6 +1897,10 @@ class Checker {
         }
         const binding = scope.lookup(expr.name);
         if (binding !== undefined) return this.record(expr, binding.type);
+        /* After the scope, so a local shadows a module constant the way it shadows anything else,
+           and before the function check, so a constant is not reported as "call it". */
+        const constant = this.lookupConst(expr.name);
+        if (constant !== undefined) return this.record(expr, constant);
         if (this.lookupFn(expr.name) !== undefined || BUILTIN_CONSTRUCTORS.has(expr.name)) {
           this.report(
             'DS0264',
@@ -2285,7 +2508,9 @@ class Checker {
   private resolveTypeName(name: string, span: Span): Type {
     if (name === 'void') return VOID;
     if (name.endsWith('?')) return option(this.resolveTypeName(name.slice(0, -1), span));
-    if (isPrimitive(name)) return primitive(name);
+    /* Through `primitiveType`, so a capability naming `Entity` gets the handle kind that a written
+       annotation gets. These two paths disagreed until 1.6.0; see `primitiveType`. */
+    if (isPrimitive(name)) return primitiveType(name);
 
     const declared = this.lookupData(name) ?? this.lookupEnum(name);
     if (declared !== undefined) return declared;
@@ -2601,9 +2826,7 @@ class Checker {
      * component field holding another entity is the design's own first example, and a helper taking
      * a handle cannot exist without a name for one.
      */
-    if (ref.kind === 'primitive' && ref.name === 'Entity') return { kind: 'entity' };
-
-    if (ref.kind === 'primitive' && isPrimitive(ref.name)) return primitive(ref.name);
+    if (ref.kind === 'primitive' && isPrimitive(ref.name)) return primitiveType(ref.name);
 
     if (ref.name === 'Result') {
       if (ref.args.length !== 2) {

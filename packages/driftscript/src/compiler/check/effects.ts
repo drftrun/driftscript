@@ -159,6 +159,10 @@ function calleesOf(decl: FnDecl): ReadonlySet<string> {
       case 'become':
         /* A state name and nothing else. There is no expression here to walk. */
         return;
+      case 'loopJump':
+        /* A keyword and nothing else, so there is no call inside it to infer an effect from. Named
+           rather than left to the `default`, because the `default` is a compile error on purpose. */
+        return;
       default:
         /*
          * **Exhaustive on purpose, and this switch was not.**

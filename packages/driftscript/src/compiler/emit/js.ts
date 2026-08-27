@@ -414,6 +414,21 @@ function emitStmt(writer: Writer, stmt: IrStmt): void {
     case 'forQuery':
       emitQuery(writer, stmt);
       return;
+    case 'loopJump':
+      writer.mark(stmt.span.start);
+      /*
+       * A `break` out of a query loop finishes the walk before it leaves.
+       *
+       * The cursor is returned to the host's pool when `ecs.next` reports exhaustion, and the
+       * protocol generated code speaks has no release call — so leaving early would keep it, and a
+       * system breaking out of a loop once a frame would drain the pool instead of the cursor. The
+       * emitted `while` costs a call per remaining entity and runs no body.
+       *
+       * A `continue` needs none of this: it reaches exhaustion the ordinary way.
+       */
+      if (stmt.drain !== null) writer.line_(`while (ecs.next($q${stmt.drain}) >= 0);`);
+      writer.line_(`${stmt.word};`);
+      return;
   }
 }
 
@@ -919,6 +934,24 @@ export function emitJs(ir: IrModule, options: EmitOptions): EmitResult {
         writer.line_(`${jsName(namespace.alias)} = $host[${JSON.stringify(namespace.module)}];`);
       }
     });
+    writer.write('\n');
+  }
+
+  /*
+   * Module constants, before anything that could name one and after the imports one could name.
+   *
+   * **Exported**, because a constant crosses a file boundary as an ordinary import exactly as a
+   * function does — which is what makes it a replacement for the `@pure fn` consumers were writing
+   * to share a number, rather than only a tidier way to write one privately.
+   *
+   * `ir.constants` arrives in dependency order; see `orderedConstants` for why that is the
+   * lowering's job and not this one's.
+   */
+  if (ir.constants.length > 0) {
+    for (const constant of ir.constants) {
+      writer.mark(constant.span.start);
+      writer.line_(`export const ${jsName(constant.name)} = ${emitExprText(constant.value)};`);
+    }
     writer.write('\n');
   }
 

@@ -393,3 +393,99 @@ describe('a compiled task', () => {
     expect(handle.done).toBe(true);
   });
 });
+
+describe('`break` and `continue` inside a task', () => {
+  /**
+   * The hazard these tests exist for is silent, and it is not the jump itself.
+   *
+   * A task body becomes a `switch` inside a `for (;;)`, so a bare JavaScript `break` in that
+   * position breaks the **switch**: the state machine falls out of its dispatch and the task ends,
+   * with nothing thrown and nothing logged. So an `if` holding a jump has to be cut into blocks
+   * even when it holds no `await` — which is why `blocksOf` cuts on anything other than suspension
+   * at all.
+   */
+  it('emits no bare `break`, because that would break the switch and end the task', () => {
+    const code = compile(
+      'task walk() {\n' +
+        '    var n = 0\n' +
+        '    while n < 3 {\n' +
+        '        await fixedTime(500ms)\n' +
+        '        n += 1\n' +
+        '        if n < 2 {\n' +
+        '            continue\n' +
+        '        }\n' +
+        '        break\n' +
+        '    }\n' +
+        '}\n',
+    );
+    /* Every exit from a block is a step assignment and a `continue` of the dispatch loop. A
+       `break;` anywhere in a task body is the bug this is here to catch. */
+    expect(code).toContain('switch ($f.step)');
+    expect(/^\s*break;\s*$/m.test(code)).toBe(false);
+  });
+
+  it('leaves the loop on `break`, across a suspend', async () => {
+    const module = await load(
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task walk() {\n' +
+        '    var n = 0\n' +
+        '    while n < 10 {\n' +
+        '        await fixedTime(500ms)\n' +
+        '        n += 1\n' +
+        '        events.mark(n)\n' +
+        '        if n == 2 {\n' +
+        '            break\n' +
+        '        }\n' +
+        '    }\n' +
+        '    events.mark(99)\n' +
+        '}\n',
+    );
+    const marks = bind(module);
+    spawn(module.exports.walk as TaskBody, module.scope);
+
+    steps = 30;
+    tickTasks();
+    expect(marks).toEqual([1]);
+
+    /* The second turn hits the `break`, so the loop is left and the statement after it runs — the
+       loop condition would have allowed eight more turns. */
+    steps = 60;
+    tickTasks();
+    expect(marks).toEqual([1, 2, 99]);
+    expect(liveTaskCount()).toBe(0);
+  });
+
+  it('skips the rest of the turn on `continue`, and keeps looping', async () => {
+    const module = await load(
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task walk() {\n' +
+        '    var n = 0\n' +
+        '    while n < 3 {\n' +
+        '        await fixedTime(500ms)\n' +
+        '        n += 1\n' +
+        '        if n < 3 {\n' +
+        '            continue\n' +
+        '        }\n' +
+        '        events.mark(n)\n' +
+        '    }\n' +
+        '}\n',
+    );
+    const marks = bind(module);
+    spawn(module.exports.walk as TaskBody, module.scope);
+
+    /* Three turns, and only the last one reaches the mark: the first two jumped back to the head
+       before it. A `continue` that had broken the switch would have ended the task at the first. */
+    steps = 30;
+    tickTasks();
+    expect(marks).toEqual([]);
+    steps = 60;
+    tickTasks();
+    expect(marks).toEqual([]);
+    steps = 90;
+    tickTasks();
+    expect(marks).toEqual([3]);
+  });
+});
+

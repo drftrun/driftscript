@@ -187,3 +187,126 @@ fn tick(world: World) {
     expect(code).toContain('$q1');
   });
 });
+
+/**
+ * A host that pools cursors, so that not giving one back is observable.
+ *
+ * This is the whole reason a `break` out of a query loop drains: the protocol generated code speaks
+ * has `query`, `without`, `view` and `next` and **no release call**, so a cursor returns to the pool
+ * when `next` reports exhaustion and by no other route. A loop that simply left would keep it, and a
+ * system doing that once a frame would run the pool dry — with no error, until queries started
+ * failing for a reason nowhere near the code that caused it.
+ *
+ * Modelled rather than mocked: `leased` counts what has gone out and not come back, which is the
+ * quantity a real pool would exhaust.
+ */
+const pooledEcs = (entities: readonly number[]) => {
+  let leased = 0;
+  const columns = { sparse: [] as number[], value: [] as number[] };
+  entities.forEach((entity, index) => {
+    columns.sparse[entity % 67108864] = index;
+    columns.value[index] = 0;
+  });
+  return {
+    leased: () => leased,
+    host: {
+      query: () => {
+        leased += 1;
+        return { at: 0, spent: false };
+      },
+      without: () => undefined,
+      view: () => columns,
+      next: (cursor: { at: number; spent: boolean }) => {
+        if (cursor.at >= entities.length) {
+          /* Exhaustion is what returns the cursor, and it is idempotent: draining a cursor that is
+             already spent must not hand a second one back to the pool. */
+          if (!cursor.spent) {
+            cursor.spent = true;
+            leased -= 1;
+          }
+          return -1;
+        }
+        const entity = entities[cursor.at];
+        cursor.at += 1;
+        return entity;
+      },
+    },
+    columns,
+  };
+};
+
+const run = async (source: string, entities: readonly number[]) => {
+  const code = emit(source);
+  const namespace = (await import(
+    /* @vite-ignore */ `data:text/javascript;base64,${btoa(code)}`
+  )) as Record<string, unknown> & { __bind: (host: Record<string, unknown>) => void };
+  const ecs = pooledEcs(entities);
+  namespace.__bind({ 'drift/ecs': ecs.host });
+  return { namespace, ecs };
+};
+
+describe('leaving a query loop early', () => {
+  const BREAKS = `
+component Hunger { value: f64 = 0 }
+
+fn feed(world: World) {
+    for e in query<Hunger>() {
+        e.Hunger.value = 1
+        break
+    }
+}
+`;
+
+  it('gives the cursor back, which only exhaustion does', async () => {
+    const { namespace, ecs } = await run(BREAKS, [10, 11, 12]);
+    (namespace.feed as (world: unknown) => void)({});
+    expect(ecs.leased()).toBe(0);
+  });
+
+  it('still stops at the first entity, so the drain is not a walk of the body', async () => {
+    const { namespace, ecs } = await run(BREAKS, [10, 11, 12]);
+    (namespace.feed as (world: unknown) => void)({});
+    /* One write, three entities. The remainder is walked by `next` alone and the body never runs
+       for it — which is what makes `break` still mean "stop", at the cost of a call per entity. */
+    expect(ecs.columns.value).toEqual([1, 0, 0]);
+  });
+
+  it('needs no drain for `continue`, which reaches exhaustion the ordinary way', async () => {
+    const code = emit(`
+component Hunger { value: f64 = 0 }
+
+fn feed(world: World) {
+    for e in query<Hunger>() {
+        if e.Hunger.value > 0 {
+            continue
+        }
+        e.Hunger.value = 1
+    }
+}
+`);
+    /* One drain would be one too many: the loop is going to exhaust the cursor by itself. */
+    expect(code).not.toContain('while (ecs.next($q0) >= 0);');
+    expect(code).toContain('continue;');
+  });
+
+  it('drains the loop it is leaving, not one it is nested in', async () => {
+    const code = emit(`
+component Hunger { value: f64 = 0 }
+
+fn feed(world: World) {
+    for e in query<Hunger>() {
+        var n = 0
+        while n < 3 {
+            n += 1
+            break
+        }
+        e.Hunger.value = 1
+    }
+}
+`);
+    /* The `break` belongs to the `while`, so nothing is drained: draining here would abandon the
+       query loop's remaining entities on the first turn of an inner loop. */
+    expect(code).not.toContain('while (ecs.next($q0) >= 0);');
+  });
+});
+

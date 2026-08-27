@@ -33,6 +33,7 @@ import type {
   SystemDecl,
   TaskDecl,
   TypeRef,
+  ConstDecl,
 } from '../ast.ts';
 import type { CheckResult, ImportedScope } from '../check/checker.ts';
 import type { Access } from '../check/entities.ts';
@@ -56,6 +57,7 @@ import type {
   IrSystem,
   IrTask,
   IrType,
+  IrConst,
 } from './ir.ts';
 
 /** The compound operators, and the binary operator each expands to. */
@@ -115,6 +117,57 @@ const ECS_ALIAS = 'ecs';
 
 const VOID_IR: IrType = { kind: 'void' };
 
+/**
+ * A module's constants, sorted so that each is written after everything it names.
+ *
+ * **JavaScript needs this and the language promises the opposite.** `LANGUAGE.md` says declaration
+ * order carries no meaning, and it holds for functions because a function declaration hoists; a
+ * `const` does not, so one naming a constant declared below it throws at module load with a
+ * `ReferenceError` in generated code nobody wrote. Sorting here is what lets the promise stay true
+ * in the language while the output stays valid.
+ *
+ * A depth-first walk with no cycle guard, because the checker already refused a cycle with
+ * `DS0240` — and a module that failed to check is never lowered. `seen` is what keeps a diamond
+ * from emitting the same constant twice.
+ */
+function orderedConstants(module: Module, lowering: Lowering): IrConst[] {
+  const decls = new Map(
+    module.decls.filter((d): d is ConstDecl => d.kind === 'const').map((d) => [d.name, d]),
+  );
+  const out: IrConst[] = [];
+  const seen = new Set<string>();
+
+  const visit = (decl: ConstDecl): void => {
+    if (seen.has(decl.name)) return;
+    seen.add(decl.name);
+    for (const reference of constantNames(decl.value)) {
+      const dependency = decls.get(reference);
+      /* An imported constant is not in this map and needs no ordering: it arrives through an ES
+         import, which is evaluated before this module's body runs. */
+      if (dependency !== undefined) visit(dependency);
+    }
+    const value = lowering.expr(decl.value);
+    out.push({ name: decl.name, value, type: value.type, span: decl.span });
+  };
+
+  for (const decl of decls.values()) visit(decl);
+  return out;
+}
+
+/** The identifiers a constant's value names. Mirrors the checker's own walk over the same forms. */
+function constantNames(expr: Expr): string[] {
+  switch (expr.kind) {
+    case 'ident':
+      return [expr.name];
+    case 'unary':
+      return constantNames(expr.operand);
+    case 'binary':
+      return [...constantNames(expr.left), ...constantNames(expr.right)];
+    default:
+      return [];
+  }
+}
+
 function irTypeOf(type: Type | undefined): IrType {
   if (type === undefined) return VOID_IR;
   switch (type.kind) {
@@ -164,6 +217,17 @@ class Lowering {
   private readonly checked: CheckResult;
   /** The query loops currently open, innermost last. See `componentAccess`. */
   private readonly loops: { binding: string; depth: number; views: readonly string[] }[] = [];
+
+  /**
+   * Every open loop, of either kind, innermost last — which `loops` above is not.
+   *
+   * `loops` holds query loops only, because it exists to resolve `<binding>.<Component>`. A jump
+   * needs the innermost loop of *any* kind, so that a `break` inside a `while` nested in a query
+   * loop leaves the `while` and does not drain a cursor it is not finished with. Two stacks rather
+   * than one with a filter, because the two questions are different and a shared stack answered the
+   * wrong one for whichever caller was written second.
+   */
+  private readonly enclosing: ({ kind: 'query'; depth: number } | { kind: 'while' })[] = [];
   /** This module's identity, which every field it declares carries into its id. */
   private readonly moduleId: string;
   /** Event declarations by name, so an `emit` can be filled out in declaration order. */
@@ -376,7 +440,9 @@ class Lowering {
           depth,
           views: views.map((view) => view.component),
         });
+        this.enclosing.push({ kind: 'query', depth });
         const body = node.body.map((stmt) => this.stmt(stmt));
+        this.enclosing.pop();
         this.loops.pop();
         return {
           kind: 'forQuery',
@@ -434,13 +500,24 @@ class Lowering {
           otherwise: node.otherwise === undefined ? null : node.otherwise.map((s) => this.stmt(s)),
           span: node.span,
         };
-      case 'while':
-        return {
-          kind: 'while',
-          condition: this.expr(node.condition),
-          body: node.body.map((s) => this.stmt(s)),
-          span: node.span,
-        };
+      case 'while': {
+        /* The condition is lowered outside the push: a `while` in a condition is not a thing, but
+           keeping the order explicit means a future expression form containing a jump cannot pick
+           this loop up by accident. */
+        const condition = this.expr(node.condition);
+        this.enclosing.push({ kind: 'while' });
+        const body = node.body.map((s) => this.stmt(s));
+        this.enclosing.pop();
+        return { kind: 'while', condition, body, span: node.span };
+      }
+      case 'loopJump': {
+        const inner = this.enclosing[this.enclosing.length - 1];
+        /* A `break` out of a query loop drains its cursor; everything else jumps and nothing more.
+           An absent loop means the checker already reported `DS0238`, and lowering stays total. */
+        const drain =
+          node.word === 'break' && inner !== undefined && inner.kind === 'query' ? inner.depth : null;
+        return { kind: 'loopJump', word: node.word, drain, span: node.span };
+      }
       case 'await':
         return {
           kind: 'await',
@@ -761,7 +838,10 @@ export function lower(
        already been refused as DS0502, and emitting an import for it would turn a diagnostic into a
        module that fails to load. */
     const values = decl.names.filter(
-      (name) => imported?.enums.has(name) === true || imported?.functions.has(name) === true,
+      (name) =>
+        imported?.enums.has(name) === true ||
+        imported?.functions.has(name) === true ||
+        imported?.constants.has(name) === true,
     );
 
     /* Two imports of one file merge into one emitted import, because two `import` statements from
@@ -846,6 +926,7 @@ export function lower(
    * fields somebody wrote, in the order they wrote them, with no defaults.
    */
   const events = module.decls.filter((d) => d.kind === 'event').map((d) => lowering.event(d));
+  const constants = orderedConstants(module, lowering);
 
   /* An entity's own fields are a component like any other, so the two lists are built together —
      a host reading `components` finds every store it has to make, without knowing which form
@@ -873,6 +954,7 @@ export function lower(
       .map((d) => lowering.prefab(d)),
     data: module.decls.filter((d) => d.kind === 'data').map((d) => lowerRecord(d)),
     enums: module.decls.filter((d) => d.kind === 'enum').map((d) => lowering.enumeration(d)),
+    constants,
     fns: module.decls.filter((d) => d.kind === 'fn').map((d) => lowering.fn(d)),
     events,
     tasks: module.decls.filter((d) => d.kind === 'task').map((d) => lowering.task(d)),

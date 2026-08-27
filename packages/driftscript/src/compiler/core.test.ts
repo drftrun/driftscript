@@ -477,3 +477,150 @@ describe('generated code', () => {
     expect(original.line).toBe(2);
   });
 });
+
+describe('leaving a loop', () => {
+  it('stops the loop on `break`', async () => {
+    const mod = await run(
+      'fn firstOver(limit: f32) -> f32 {\n' +
+        '    var n = 0\n' +
+        '    while n < 100 {\n' +
+        '        n += 1\n' +
+        '        if n >= limit {\n' +
+        '            break\n' +
+        '        }\n' +
+        '    }\n' +
+        '    return n\n' +
+        '}\n',
+    );
+    expect(mod.firstOver(7 as never)).toBe(7);
+    /* The loop still runs once: `break` leaves at the point it is written, not before the body. */
+    expect(mod.firstOver(0 as never)).toBe(1);
+  });
+
+  it('skips the rest of the turn on `continue`', async () => {
+    const mod = await run(
+      'fn sumOdd(upto: f32) -> f32 {\n' +
+        '    var n = 0\n' +
+        '    var total = 0\n' +
+        '    while n < upto {\n' +
+        '        n += 1\n' +
+        '        if n % 2 == 0 {\n' +
+        '            continue\n' +
+        '        }\n' +
+        '        total += n\n' +
+        '    }\n' +
+        '    return total\n' +
+        '}\n',
+    );
+    expect(mod.sumOdd(10 as never)).toBe(25);
+  });
+
+  it('refuses either word outside a loop, naming the one that was written', () => {
+    /* One code for both, because it is one mistake. Two would split a consumer's grep across a
+       distinction that changes nothing about what they have to do. */
+    const broken = compile('fn f() {\n    break\n}\n');
+    expect(broken.diagnostics[0].code).toBe('DS0238');
+    expect(broken.diagnostics[0].message).toContain('`break`');
+    expect(compile('fn f() {\n    continue\n}\n').diagnostics[0].message).toContain('`continue`');
+  });
+
+  it('refuses a jump in a function called from a loop, because that function is not in one', () => {
+    /* The loop counter is per body rather than global. A counter that leaked across a call would
+       have accepted this, and the generated function would have carried a jump with no loop. */
+    const source =
+      'fn inner() {\n    break\n}\n\nfn outer() {\n    var n = 0\n    while n < 3 {\n        n += 1\n        inner()\n    }\n}\n';
+    expect(codesOf(source)).toContain('DS0238');
+  });
+
+  it('leaves the innermost loop, which is the only loop a jump can name', () => {
+    /* There are no labels. `break` in a nested loop leaves the inner one and the outer one carries
+       on, which is what makes the counter sufficient. */
+    const source =
+      'fn f() -> f32 {\n' +
+        '    var outer = 0\n' +
+        '    var hits = 0\n' +
+        '    while outer < 3 {\n' +
+        '        outer += 1\n' +
+        '        var inner = 0\n' +
+        '        while inner < 10 {\n' +
+        '            inner += 1\n' +
+        '            hits += 1\n' +
+        '            break\n' +
+        '        }\n' +
+        '    }\n' +
+        '    return hits\n' +
+        '}\n';
+    expect(codesOf(source)).toEqual([]);
+  });
+});
+
+describe('a module constant', () => {
+  it('is a value the whole file can name, without a function around it', async () => {
+    const mod = await run(
+      'let SECONDS_PER_HOUR = 3600\n\n' +
+        'fn hours(seconds: f32) -> f32 {\n    return seconds / SECONDS_PER_HOUR\n}\n',
+    );
+    expect(mod.hours(7200 as never)).toBe(2);
+  });
+
+  it('may name another constant, in either order', async () => {
+    /* Declaration order carries no meaning, which `LANGUAGE.md` promises without exception. It is
+       true for a function because a function declaration hoists and a `const` does not, so the
+       lowering sorts these into dependency order — see `orderedConstants`. */
+    const mod = await run(
+      'let SECONDS_PER_HOUR = 60 * MINUTE\n' +
+        'let MINUTE = 60\n\n' +
+        'fn hours(seconds: f32) -> f32 {\n    return seconds / SECONDS_PER_HOUR\n}\n',
+    );
+    expect(mod.hours(7200 as never)).toBe(2);
+  });
+
+  it('is exported, because a shared number is what it replaces', async () => {
+    const mod = await run('let LIMIT = 12\n\nfn f() -> f32 {\n    return LIMIT\n}\n');
+    expect((mod as unknown as { LIMIT: number }).LIMIT).toBe(12);
+  });
+
+  it('takes a written type, and is checked against it', () => {
+    expect(codesOf('let A: f64 = 1\n\nfn f() -> f64 {\n    return A\n}\n')).toEqual([]);
+    expect(codesOf('let A: String = 1\n')).toContain('DS0208');
+  });
+
+  it('is shadowed by a local of the same name, like any other binding', async () => {
+    const mod = await run(
+      'let A = 1\n\nfn f() -> f32 {\n    let A = 2\n    return A\n}\n',
+    );
+    expect(mod.f()).toBe(2);
+  });
+
+  it('refuses a cycle, naming every constant in it', () => {
+    /* Reported against each, and each names the whole set: a cycle read as one edge sends a reader
+       to whichever end the edge happened to point at. */
+    const result = compile('let A = B\nlet B = A\n');
+    expect(result.diagnostics.every((d) => d.code === 'DS0240')).toBe(true);
+    expect(result.diagnostics[0].message).toContain('`A`');
+    expect(result.diagnostics[0].message).toContain('`B`');
+  });
+
+  it('refuses a call in its value, because a module is evaluated before its host is bound', () => {
+    const result = compile('@pure\nfn g() -> f32 {\n    return 1\n}\n\nlet A = g()\n');
+    expect(result.diagnostics[0].code).toBe('DS0239');
+  });
+
+  it('cannot be written to', () => {
+    expect(codesOf('let A = 1\n\nfn f() {\n    A = 2\n}\n')).toContain('DS0241');
+  });
+
+  it('refuses `var` at the top of a file, and says why', () => {
+    /* Module state is what a hot reload has to migrate and a replay has to restore. The message
+       carries that reason, because "expected a declaration" would have named the keyword and not
+       the problem. */
+    const result = compile('var A = 1\n');
+    expect(result.diagnostics[0].code).toBe('DS0137');
+    expect(result.diagnostics[0].message).toContain('hot reload');
+  });
+
+  it('refuses a name that is already a function', () => {
+    expect(codesOf('let A = 1\n\nfn A() -> f32 {\n    return 1\n}\n')).toContain('DS0242');
+  });
+});
+

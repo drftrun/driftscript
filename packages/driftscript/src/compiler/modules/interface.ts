@@ -19,7 +19,12 @@ import { lowerRecords } from '../ir/lower.ts';
 import type { GraphModule, ResolvedGraph } from './graph.ts';
 
 /** An empty scope, for a module that imports nothing. Shared, because it is never written to. */
-const EMPTY: ImportedScope = { data: new Map(), enums: new Map(), functions: new Map() };
+const EMPTY: ImportedScope = {
+  data: new Map(),
+  enums: new Map(),
+  functions: new Map(),
+  constants: new Map(),
+};
 
 /** What a module publishes: its declarations, and its records already lowered. */
 interface Published {
@@ -82,7 +87,12 @@ export function interfacesOf(graph: ResolvedGraph): ReadonlyMap<string, Publishe
     visiting.delete(id);
 
     const published: Published = {
-      scope: { data: own.data, enums: own.enums, functions: own.functions },
+      scope: {
+        data: own.data,
+        enums: own.enums,
+        functions: own.functions,
+        constants: own.constants,
+      },
       records: lowerRecords(
         module.module,
         {
@@ -90,6 +100,7 @@ export function interfacesOf(graph: ResolvedGraph): ReadonlyMap<string, Publishe
           data: own.data,
           enums: own.enums,
           functions: own.functions,
+          constants: own.constants,
           /* Empty: this lowers a dependency's *records* for their defaults, and a record has no
              query loops and no component access. Passing the collect pass's own would mean
              threading state through a path that never reads it. */
@@ -131,6 +142,7 @@ function scopeFor(
   const data = new Map<string, ReturnType<typeof Map.prototype.get>>();
   const enums = new Map<string, ReturnType<typeof Map.prototype.get>>();
   const functions = new Map<string, ReturnType<typeof Map.prototype.get>>();
+  const constants = new Map<string, ReturnType<typeof Map.prototype.get>>();
   const records = new Map<string, readonly IrField[]>();
   const diagnostics: Diagnostic[] = [];
 
@@ -161,12 +173,14 @@ function scopeFor(
       const type = published.data.get(name);
       const enumeration = published.enums.get(name);
       const fn = published.functions.get(name);
+      const constant = published.constants.get(name);
       const fields = lowered.get(name);
       if (fields !== undefined) records.set(name, fields);
 
       if (type !== undefined) data.set(name, type);
       else if (enumeration !== undefined) enums.set(name, enumeration);
       else if (fn !== undefined) functions.set(name, fn);
+      else if (constant !== undefined) constants.set(name, constant);
       else {
         diagnostics.push({
           code: 'DS0502',
@@ -181,7 +195,7 @@ function scopeFor(
   }
 
   return {
-    scope: { data, enums, functions } as ImportedScope,
+    scope: { data, enums, functions, constants } as ImportedScope,
     records,
     requires,
     through,
@@ -205,6 +219,7 @@ function suggestion(name: string, published: ImportedScope): string {
     ...published.data.keys(),
     ...published.enums.keys(),
     ...published.functions.keys(),
+    ...published.constants.keys(),
   ]) {
     const distance = editDistance(name, candidate);
     if (distance < bestDistance) {
