@@ -12,6 +12,45 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.6.0
+
+**Four gaps a consumer reported, and two bugs found while closing them.**
+
+- **`List<T>`.** `[a, b]`, `xs[i]`, `len`, `push` and `for … in` are language forms rather than a
+  module, so there is no `std/collections` — that entry was listed in `STD_MODULES` and in the
+  language reference for as long as neither existed, and it is gone rather than filled in.
+  **The list is invariant**: a `List<Wolf>` is not a `List<Dog>`, because with covariance a `Dog`
+  could be pushed through a reference whose real list holds `Wolf`, and record subtyping is sound
+  here partly because that cannot happen. An index past the end throws, for the reason integer
+  overflow does. `push` needs a `mut` binding, because growing a list writes to the container.
+- **`break` and `continue`.** No labels; a jump always means the loop it is written in. **A `break`
+  out of a query loop finishes walking the cursor first** — the protocol generated code speaks has
+  no release call, so a cursor is returned to the pool when `ecs.next` reports exhaustion and by no
+  other route, and leaving early would keep one per frame.
+- **Module constants.** A `let` at the top of a file, exported, and importable the way a function
+  is. Its value is arithmetic over literals and other constants; a call cannot run before a module's
+  host is bound. Declaration order carries no meaning, so they are emitted in dependency order and a
+  cycle is refused naming every constant in it. `var` at this level is refused.
+- **A component reached through a handle now compiles to a read.** `who.Placement.x` outside a query loop
+  emitted `who.Placement.x` — a property of a number. It type-checked, it linked, and it threw the moment
+  it ran; a helper taking an `Entity` and writing a component is a documented pattern that produced
+  broken code, and nothing had executed one. It lowers to `ecs.read` and `ecs.write` instead, which
+  is what a consumer was writing by hand with the component and field as strings — the same calls,
+  with both names checked.
+- **A capability may return `Entity`.** The registry path resolved the name to a primitive where a
+  written annotation resolved it to the handle kind, so a host that returned a handle got a type on
+  which `.Component` was refused with "`Entity` has no fields". The two resolvers disagreed about
+  one word and only one of them had ever been exercised.
+- **A system's declared access is added to its metadata**, not only checked against inference. A
+  capability naming a component with a *string* is invisible to inference, so the component never
+  reached the metadata and a host enforcing declared access refused the call at runtime — with no
+  way for the author to grant it, because writing `reads Position` was checked and then dropped.
+
+**Two things a consumer has to change.** A helper that reaches a component through a handle now
+takes a `World` parameter, because that is what the read runs against; the form it replaces could
+not run. And a `.drs` file that imported `std/collections` was already failing per name and now
+fails at the module.
+
 ## 1.5.0
 
 **`std/math` works at either float width, and floats have a conversion.** Both halves of one hole,
