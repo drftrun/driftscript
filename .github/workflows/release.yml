@@ -1,12 +1,27 @@
 name: Release
 
-# Nothing here runs on a push. A release happens when somebody chooses one, and the default is a
-# dry run — `publish` has to be typed to mean it.
+# A release happens when the version changes, and at most once per version.
 #
-# `docs/RELEASING.md` is the procedure. This workflow exists for one reason beyond convenience:
-# `--provenance` needs a public repository and a runner with an OIDC identity, and a laptop has
-# neither.
+# This used to be `workflow_dispatch` only, on the grounds that a release should be chosen rather
+# than triggered. **What replaced that is not "automatic" but "idempotent"**: the choice is still
+# made by a person, it is just made by bumping the version rather than by typing `publish` into a
+# form afterwards. A number that is already on the registry publishes nothing, so a re-run, a
+# revert, or a second push cannot produce a second release — and there is exactly one way to cause
+# one, which is the property the manual gate was really protecting.
+#
+# `workflow_dispatch` stays, and on that path `publish` still has to be typed. It is how a dry run
+# proves the gates without a version bump.
+#
+# **The `paths` filter is the CI-minutes rule, not an optimisation.** A version bump always touches
+# a manifest, so nothing that could be a release is missed; a documentation change, a source change
+# and a dependency change all start no runner here. `decide` is a second, exact filter for the case
+# the first cannot see: a manifest edited for some other reason.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'packages/*/package.json'
   workflow_dispatch:
     inputs:
       confirm:
@@ -19,7 +34,52 @@ permissions:
   id-token: write
 
 jobs:
+  # Cheap, and deliberately before anything that installs. It asks the registry what exists rather
+  # than reading the git history, because the registry is the thing being made true — a bump that
+  # was pushed and whose publish then failed has a new version in the manifest and nothing on npm,
+  # and that is precisely the case a re-run has to be able to finish.
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      driftscript: ${{ steps.check.outputs.driftscript }}
+      language: ${{ steps.check.outputs.language }}
+      any: ${{ steps.check.outputs.any }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - id: check
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          ANY=no
+          for pkg in driftscript driftscript-language; do
+            # `npm view` exits non-zero for a version that does not exist, which is the answer
+            # rather than an error — so it is caught and read as "not published".
+            if npm view "$pkg@$VERSION" version >/dev/null 2>&1; then
+              FOUND=no
+              echo "$pkg@$VERSION is already published"
+            else
+              FOUND=yes
+              ANY=yes
+              echo "$pkg@$VERSION is not on the registry"
+            fi
+            if [ "$pkg" = "driftscript" ]; then
+              echo "driftscript=$FOUND" >> "$GITHUB_OUTPUT"
+            else
+              echo "language=$FOUND" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          echo "any=$ANY" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: decide
+    # A dispatch always runs, so a dry run is possible with nothing to publish. A push only runs
+    # when there is something to publish, which is what keeps an ordinary manifest edit free.
+    if: github.event_name == 'workflow_dispatch' || needs.decide.outputs.any == 'yes'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -41,20 +101,33 @@ jobs:
       # In order. `driftscript-language` pins `driftscript` exactly, so publishing it first lists a
       # package whose dependency does not exist yet: npm accepts that and a consumer's install
       # does not.
+      #
+      # Each is skipped when that version is already on the registry, so a run that failed halfway
+      # finishes the half that is left instead of erroring on the half that succeeded.
       - name: Publish driftscript
-        if: inputs.confirm == 'publish'
+        if: >-
+          needs.decide.outputs.driftscript == 'yes' &&
+          (github.event_name == 'push' || inputs.confirm == 'publish')
         run: npm publish -w driftscript --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish driftscript-language
-        if: inputs.confirm == 'publish'
+        if: >-
+          needs.decide.outputs.language == 'yes' &&
+          (github.event_name == 'push' || inputs.confirm == 'publish')
         run: npm publish -w driftscript-language --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Nothing to publish
+        if: needs.decide.outputs.any != 'yes'
+        run: echo "Every gate is green. ${{ needs.decide.outputs.version }} is already on the registry."
+
       - name: Dry run
-        if: inputs.confirm != 'publish'
+        if: >-
+          needs.decide.outputs.any == 'yes' &&
+          github.event_name == 'workflow_dispatch' && inputs.confirm != 'publish'
         run: |
           echo "Every gate is green and nothing was published."
-          echo "Re-run with confirm=publish to publish $(node -p "require('./package.json').version")."
+          echo "Re-run with confirm=publish to publish ${{ needs.decide.outputs.version }}."

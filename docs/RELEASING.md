@@ -3,8 +3,15 @@
 **Two publishes, in one order, and a gate that runs against a tarball rather than against this
 workspace.**
 
-Nothing here is automatic. `.github/workflows/release.yml` is `workflow_dispatch` only, so a release
-happens when somebody chooses one.
+**A release is caused by the version changing, and by nothing else.** `.github/workflows/release.yml`
+publishes on a push to `main` when the version in the manifests is not yet on the registry, so the
+choice is still a person's — it is made by cutting the version rather than by typing `publish` into
+a form afterwards. A version already on npm publishes nothing, so a re-run, a revert or a second
+push cannot produce a second release.
+
+That idempotence is what replaced the manual gate, and it is a stronger guarantee than the gate
+was: there is exactly one way to cause a release, and doing it twice is not one of them. The
+`workflow_dispatch` entry stays for a dry run, and on that path `publish` still has to be typed.
 
 ---
 
@@ -64,9 +71,20 @@ Then write the changelog entry. `scripts/version.test.mjs` fails if `CHANGELOG.m
 the version the manifests say, because a number with no entry is a release nobody described — and a
 reader who arrives from npm has nowhere else to look.
 
+**The bump, the range, the lockfile and the changelog go in one commit**, because pushing the bump
+is what starts the release. A bump pushed without its entry does not publish a described release —
+it fails that gate and publishes nothing, which is the right way round, but it costs a run and
+leaves a red mark against a commit that was only half of a release.
+
 ## Publishing
 
-From a laptop, without provenance:
+**Push the bump and the changelog to `main`, and that is the release.** The workflow runs `npm ci`,
+the build, the typecheck, both suites and `publish:check` on the exact commit, then publishes the
+two packages in order with provenance. A run that fails halfway can be re-run: each publish step is
+skipped when that package's version is already on the registry, so it finishes the half that is
+left.
+
+By hand from a laptop, without provenance, if the workflow is unavailable:
 
 ```sh
 npm login          # 2FA on the account
@@ -79,13 +97,25 @@ and a public repository, and npm does not degrade gracefully without one: it fai
 `Provenance generation in npm is not supported in this environment` instead of publishing without an
 attestation. Passing it locally does not get you an unsigned publish, it gets you no publish.
 
-For an attested release, run the **Release** workflow with `confirm=publish`. It needs an
-`NPM_TOKEN` secret on the repository, and the repository has to be public for the attestation to
-verify.
+The automated path needs an `NPM_TOKEN` secret on the repository, and the repository has to be
+public for the attestation to verify. Both are true today.
+
+**That token expires, and the failure will not look like an expiry.** The one configured on
+2026-08-27 is a granular token with read-write on `driftscript` and `driftscript-language` and a
+90-day life, so it lapses around **2026-11-25**. After that a release runs every gate green and
+fails on the last step with a 401 that reads as a registry problem. Replace it at
+[npmjs.com/settings/emulator000/tokens](https://www.npmjs.com/settings/emulator000/tokens) and
+`gh secret set NPM_TOKEN -R drftrun/driftscript`.
+
+To publish without pushing a bump — or to prove the gates without publishing — run the **Release**
+workflow by hand. `confirm=publish` publishes; anything else is a dry run.
 
 Either way `prepack` runs the build, so a tarball is never made from a stale `dist/`.
 
 ## Afterwards
+
+The tag is not automated, deliberately: it should mark a version that actually reached the registry,
+and only the run knows whether it did.
 
 ```sh
 git tag v<version> && git push --tags
