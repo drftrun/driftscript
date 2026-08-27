@@ -1,0 +1,74 @@
+{
+  "name": "driftscript",
+  "version": "1.4.0",
+  "description": "A strict, deterministic-aware, hot-reloadable scripting language. Host-neutral: it knows types, effects and capabilities, and never a scene, a mesh or a mix bus",
+  "license": "MIT",
+  "author": "Drift Technologies",
+  "homepage": "https://script.driftengine.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drftrun/driftscript.git",
+    "directory": "packages/driftscript"
+  },
+  "bugs": {
+    "url": "https://github.com/drftrun/driftscript/issues"
+  },
+  "keywords": [
+    "driftscript",
+    "scripting-language",
+    "compiler",
+    "language",
+    "vite-plugin",
+    "hot-reload",
+    "deterministic",
+    "ecs",
+    "gamedev",
+    "game-engine"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./compiler": {
+      "types": "./dist/compiler/index.d.ts",
+      "default": "./dist/compiler/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "default": "./dist/vite.js"
+    },
+    "./std": {
+      "types": "./dist/std/index.d.ts",
+      "default": "./dist/std/index.js"
+    },
+    "./drs": {
+      "types": "./dist/drs.d.ts"
+    },
+    "./grammar.json": "./dist/grammar.json",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.mjs",
+    "docs",
+    "examples",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ../../scripts/build.mjs driftscript"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "source-map-js": "^1.2.1"
+  }
+}

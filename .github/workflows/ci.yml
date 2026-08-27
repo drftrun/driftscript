@@ -1,0 +1,41 @@
+name: CI
+
+# Markdown is excluded and checked by `docs.yml` instead, which needs no install and no build.
+# A documentation change should not spend four minutes proving the compiler still works.
+#
+# `docs/corpus/**` is deliberately *not* excluded: those `.drs` files are test input, and a change
+# to one of them is a change to what the compiler is asserted to accept.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**/*.md', 'LICENSE']
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+      # Both builds come first because the gates measure what they emit rather than what the source
+      # says: the size gate bundles what a consumer resolves, and the editors gate packs the
+      # extension into a .vsix and spawns the server inside it.
+      - run: npm run build
+      - run: npm run extension
+
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:scripts
+
+      # A grammar that has drifted still highlights, it just highlights the wrong things, so
+      # nothing else here would fail.
+      - run: npm run grammar:check

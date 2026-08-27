@@ -1,0 +1,25 @@
+// Enums and match: every case covered, checked by the compiler.
+//
+// Leaving `Amber` out is an error that names it, rather than a run-time surprise on the one
+// afternoon the light is amber.
+
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+fn go(light: Light) -> bool {
+    return match light {
+        Red => false
+        Amber => false
+        Green => true
+    }
+}
+
+fn describe(light: Light) -> String {
+    return match light {
+        Green => "go"
+        _ => "wait"
+    }
+}

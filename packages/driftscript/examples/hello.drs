@@ -1,0 +1,8 @@
+// The smallest complete DriftScript program.
+//
+// It imports nothing, so it links against a target that provides no capabilities at all —
+// which is what "the language runs in any host" means in practice rather than in prose.
+
+fn hello() -> String {
+    return "hello, world"
+}

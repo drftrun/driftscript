@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/drftrun/driftscript/security/advisories/new
+    about: Report privately. Do not open a public issue for something exploitable.
+  - name: Guide, reference and playground
+    url: https://script.driftengine.dev
+    about: The language documentation, and a playground that runs in a browser.

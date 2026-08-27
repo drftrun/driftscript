@@ -1,0 +1,75 @@
+{
+  /*
+   * The language itself, typechecked as a consumer's bundler sees it.
+   *
+   * `"types": []` is the load-bearing line. `driftscript` is a package a consumer bundles into a
+   * browser, so `process`, `Buffer` and `require` are exactly the names that must not compile
+   * here. TypeScript pulls in every `@types` package it can find unless a config says otherwise,
+   * and `@types/node` is installed for the tools — so without this line, installing types for a
+   * build script would quietly hand Node's globals to the runtime.
+   *
+   * The Node-side files are excluded below and checked by `tsconfig.scripts.json` instead, where
+   * those globals exist and are meant to.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    /*
+     * Relative imports may name a `.ts` file, and the Vite plugin is why.
+     *
+     * A bundler plugin is loaded by the **toolchain**, which is Node, and Node's ESM resolver
+     * requires an extension on a relative import. Writing the extension is what lets `node` load
+     * this source directly during development.
+     *
+     * A published consumer never sees any of it: `npm run build` emits `dist/` with
+     * `rewriteRelativeImportExtensions`, which turns every `./x.ts` into `./x.js` on the way out.
+     * That is the difference between this repository and the one the language grew up in, where
+     * the source shipped and every build-side entry point failed on a registry install.
+     *
+     * This only *permits* the extension; it does not require one. It needs `noEmit`, which is set
+     * above — the emitting config is each package's `tsconfig.build.json`.
+     */
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["packages/*/src", "demo"],
+  /*
+   * The Node-side files, checked by `tsconfig.scripts.json` instead.
+   *
+   * **A test of a Node-side module is excluded with it**, and that is not an oversight: `exclude`
+   * only removes a file from `include`, it does not stop one being pulled in as an import — so a
+   * test that lived here and imported the Vite plugin would drag Node's types back into this
+   * config through the back door.
+   */
+  "exclude": [
+    /*
+     * The language server's process side. It reads `process.argv` and speaks over stdio, so it is
+     * Node code living in a package whose every other file is browser-or-pure.
+     *
+     * **It is deliberately not exported from that package's barrel.** Exporting it would pull
+     * `vscode-languageserver` into anything importing `driftscript-language`, which is how a
+     * transport ends up in a consumer's bundle. A process entry point is started, not imported.
+     */
+    "packages/driftscript-language/src/server.ts",
+    "packages/driftscript-language/src/bin",
+    /*
+     * The Vite plugin, its test, and the demo config that loads it. A bundler plugin is toolchain
+     * code by definition — it reads the disk to resolve a `.drs` file's imports, and the toolchain
+     * is Node.
+     */
+    "packages/driftscript/src/vite.ts",
+    "packages/driftscript/src/vite.test.ts",
+    "demo/vite.config.ts"
+  ]
+}

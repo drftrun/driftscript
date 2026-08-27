@@ -1,0 +1,37 @@
+name: Language or tooling proposal
+description: Something the language should be able to express, or a tool should do
+labels: [proposal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Start from the program you cannot write.** A proposal that opens with a syntax has already
+        chosen an answer; one that opens with a program makes the answer arguable.
+
+        `CONTRIBUTING.md` lists what gets refused and why, written in advance. Reading it first may
+        save you the issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to write, and what stops you
+      description: The `.drs` you wanted, and what the compiler says about it today.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead
+      description: |
+        There is usually something. How bad it is, is most of the argument — and if there is no
+        workaround at all, say that, because it is a different and stronger case.
+    validations:
+      required: true
+  - type: textarea
+    id: cost
+    attributes:
+      label: What it would cost
+      description: |
+        What this makes harder, slower, or less checkable. A proposal that costs nothing is a
+        proposal that has not been looked at from the other side.
+    validations:
+      required: false

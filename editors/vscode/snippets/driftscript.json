@@ -1,0 +1,72 @@
+{
+  "function": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:param}: ${3:f32}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function"
+  },
+  "deterministic function": {
+    "prefix": "fnd",
+    "body": [
+      "@deterministic",
+      "fn ${1:name}(${2:param}: ${3:f32}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "A function the checker holds to the simulation boundary"
+  },
+  "record": {
+    "prefix": "data",
+    "body": [
+      "data ${1:Name} {",
+      "\t${2:field}: ${3:f32} = ${4:0}",
+      "}"
+    ],
+    "description": "A record"
+  },
+  "enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:Variant}",
+      "\t${3:Other}",
+      "}"
+    ],
+    "description": "An enum, with variants that may carry a payload"
+  },
+  "match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value} {",
+      "\t${2:Variant} => ${3:result}",
+      "}"
+    ],
+    "description": "A match, which the checker holds to exhaustiveness"
+  },
+  "import a capability": {
+    "prefix": "import",
+    "body": [
+      "import { ${1:name} } from \"${2:drift/audio}\""
+    ],
+    "description": "Import a capability module"
+  },
+  "record with a base": {
+    "prefix": "datax",
+    "body": [
+      "data ${1:Name} : ${2:Base} {",
+      "\t${3:field}: ${4:f32} = ${5:0}",
+      "}"
+    ],
+    "description": "A record extending another. It inherits the base's fields, base-most first, and may not restate one"
+  },
+  "import a file": {
+    "prefix": "importf",
+    "body": [
+      "import { ${1:Name} } from \"./${2:module}\""
+    ],
+    "description": "Import from another .drs file. A relative specifier is a file; anything else is a capability"
+  }
+}

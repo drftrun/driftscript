@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    A `.drs` file, in the explorer.
+
+    **This is DriftScript's own mark, not DriftEngine's.** It used to be the engine's isometric cube,
+    which was the wrong mark for the same reason the whole of this repository exists: the language is
+    not the engine, and a file icon that says otherwise teaches a reader something false before they
+    have opened anything. The site at script.driftengine.dev draws the language as the caret under a
+    diagnostic, the compiler pointing at the thing it will not accept, and the accent token in that
+    site's stylesheet is described there as the colour of one.
+
+    Two 45-degree legs meeting at a right angle, flat caps, mitred join, no curve anywhere. The
+    stroke is half the half-width, which is the ratio the site's favicon uses at 32 pixels; the glyph
+    is scaled to 56% of the box because there is no tile here to hold it and a file icon is drawn at
+    sixteen.
+
+    **The tile is dropped and the background is transparent.** A filled dark tile at 16px in a file
+    tree reads as a solid block beside every other icon, and it fights whatever colour the explorer
+    is already painting. What that gives up is the mark's own framing, which is worth having on a
+    social card and is noise at sixteen pixels.
+
+    This is the dark-UI variant and it keeps the accent exactly: #f0a437 measures 7.90:1 against
+    VSCode's dark tree. Against a light tree the same colour is 1.88:1, which is why the light
+    variant exists and is not a copy of this file.
+  -->
+  <path d="M14 23 L32 41 L50 23" fill="none" stroke="#f0a437" stroke-width="9"
+        stroke-linecap="square" stroke-linejoin="miter" />
+</svg>

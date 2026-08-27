@@ -1,0 +1,35 @@
+{
+  "name": "driftscript-workspace",
+  "private": true,
+  "version": "1.4.0",
+  "description": "The DriftScript language, its language server, and its editor client",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "editors/*"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p . && tsc -p tsconfig.scripts.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:scripts": "node --test --test-force-exit scripts/*.test.mjs packages/*/src/**/*.test.mjs",
+    "grammar": "node packages/driftscript/src/tooling/grammar/generate.mjs",
+    "grammar:check": "node packages/driftscript/src/tooling/grammar/generate.mjs --check",
+    "demo": "vite demo",
+    "publish:check": "node scripts/publish-check.mjs",
+    "extension": "npm run package -w driftscript-vscode",
+    "vsix": "npm run vsix -w driftscript-vscode"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "esbuild": "0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

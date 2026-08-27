@@ -1,0 +1,12 @@
+# What stays out of the .vsix.
+#
+# The two bundles in `out/` are the extension; everything that produced them is not. Source maps are
+# kept on disk for the Extension Development Host and are 3 MB of the package if they ship, which is
+# most of it.
+.vscodeignore
+.gitignore
+src/**
+scripts/**
+out/**/*.map
+node_modules/**
+**/*.vsix

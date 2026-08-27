@@ -1,0 +1,25 @@
+// Integers say what they do when a result does not fit. There is no undefined behaviour.
+//
+// A plain `+` fails rather than producing a value outside the type. `+%` wraps and `+|` saturates,
+// and choosing is the point: a health bar saturates, a hash wraps, a count should fail.
+
+fn health(current: u8, healed: u8) -> u8 {
+    return current +| healed
+}
+
+fn hashStep(accumulator: u32, value: u32) -> u32 {
+    return accumulator *% value
+}
+
+fn total(a: u8, b: u8) -> u8 {
+    return a + b
+}
+
+// Units are erased. `30m` is the number 30; `250ms` is 0.25 because seconds are the base unit.
+fn reach() -> f32 {
+    return 30m
+}
+
+fn beat() -> f32 {
+    return 250ms
+}

@@ -1,0 +1,53 @@
+{
+  /*
+   * The tools and the Node-side files, typechecked separately from the language.
+   *
+   * A second config rather than another entry in `include`, and the reason is the one line they
+   * differ by: these run in Node and the language does not. The Vite plugin reads the disk, the
+   * language server parses `process.argv` and speaks over stdio, and the size fixtures are bundled
+   * by a script — so all of them need `@types/node`, and none of the runtime may ever compile
+   * against those types, because a consumer bundles that source for a browser.
+   *
+   * `lib` carries the DOM as well as Node, which looks wrong for command-line code and is not: the
+   * runtime declares `import.meta.hot` against the browser's types, and a tool that imports the
+   * runtime compiles those declarations even though nothing it runs will touch one.
+   */
+  "compilerOptions": {
+    /*
+     * Matches the language config, and it is needed here for a reason that is easy to miss.
+     *
+     * `scripts/fixtures/size/driftscript-*.ts` import `driftscript`, so the language package is
+     * typechecked through them, and its relative imports name `.ts`. The reasoning is at the same
+     * option in `tsconfig.json`.
+     */
+    "allowImportingTsExtensions": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  /*
+   * The TypeScript files only. The `.mjs` ones are plain Node with their own `node --test` suites,
+   * and pulling them in here would mean `allowJs` and a second set of rules for code that already
+   * has a check.
+   */
+  "include": [
+    "scripts/**/*.ts",
+    "packages/driftscript-language/src/server.ts",
+    "packages/driftscript-language/src/bin/**/*.ts",
+    "packages/driftscript/src/vite.ts",
+    "packages/driftscript/src/vite.test.ts",
+    "demo/vite.config.ts",
+    "editors/*/src/**/*.ts"
+  ]
+}

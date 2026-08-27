@@ -1,0 +1,4 @@
+syntaxes/
+out/
+node_modules/
+*.vsix

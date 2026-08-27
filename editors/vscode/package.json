@@ -1,0 +1,171 @@
+{
+  "name": "driftscript-vscode",
+  "displayName": "DriftScript (.drs)",
+  "description": "Editor support for DriftScript: diagnostics, completion, hover and semantic tokens, from the compiler itself",
+  "version": "0.2.0",
+  "license": "MIT",
+  "icon": "icons/marketplace.png",
+  "private": true,
+  "publisher": "DriftTech",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "driftscript",
+    "drs",
+    "scripting-language",
+    "language-server",
+    "syntax-highlighting",
+    "gamedev",
+    "game-engine",
+    "ecs"
+  ],
+  "galleryBanner": {
+    "color": "#05070c",
+    "theme": "dark"
+  },
+  "activationEvents": [
+    "onLanguage:driftscript"
+  ],
+  "main": "./out/extension.cjs",
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "package": "npm run build && node ./scripts/copy-grammar.mjs",
+    "vsix": "npm run package && vsce package --no-dependencies --no-git-tag-version"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "driftscript",
+        "aliases": [
+          "DriftScript",
+          "driftscript"
+        ],
+        "extensions": [
+          ".drs"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/driftscript-light.svg",
+          "dark": "./icons/driftscript-dark.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "driftscript",
+        "scopeName": "source.driftscript",
+        "path": "./syntaxes/driftscript.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "driftscript",
+        "path": "./snippets/driftscript.json"
+      }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "capability",
+        "superType": "function",
+        "description": "A host capability call"
+      },
+      {
+        "id": "annotation",
+        "superType": "decorator",
+        "description": "An @annotation"
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "deterministic",
+        "description": "Inside a @deterministic function"
+      },
+      {
+        "id": "hot",
+        "description": "Inside a @hot function"
+      },
+      {
+        "id": "unavailable",
+        "description": "The configured target does not provide it"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "driftscript",
+        "scopes": {
+          "capability": [
+            "entity.name.function.capability.driftscript"
+          ],
+          "annotation": [
+            "entity.name.function.decorator.driftscript"
+          ]
+        }
+      }
+    ],
+    "configuration": {
+      "title": "DriftScript",
+      "properties": {
+        "driftscript.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the driftscript-language server entry. Defaults to the copy resolved from this extension's own location. An installed copy must be named by its built entry \u2014 node_modules/driftscript-language/dist/bin/server.js \u2014 because Node will not strip types under node_modules."
+        },
+        "driftscript.host": {
+          "type": "string",
+          "default": "",
+          "description": "A capabilities.json describing what your host provides, or a module exporting `registry` and/or `manifest`. There is no default: DriftScript ships no host. Without one, diagnostics work and completion and hover offer nothing \u2014 the server says which state it is in on startup."
+        },
+        "driftscript.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the traffic between VSCode and the language server."
+        }
+      }
+    },
+    "problemMatchers": [
+      {
+        "name": "driftscript",
+        "owner": "driftscript",
+        "source": "driftscript",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+):\\s+(error|warning)\\s+(DS\\d{4}):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "code": 5,
+          "message": 6
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drftrun/driftscript.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/drftrun/driftscript/issues"
+  },
+  "homepage": "https://script.driftengine.dev"
+}

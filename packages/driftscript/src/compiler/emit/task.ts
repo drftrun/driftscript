@@ -1,0 +1,389 @@
+/**
+ * A task, turned into a state machine.
+ *
+ * **A resume is a switch on an integer, not a closure.** That is the whole reason this file exists
+ * instead of the task being an `async function`: a promise chain allocates a closure and a promise
+ * per await, per task, per resume, and a scheduler running per simulation step turns that into the
+ * per-frame allocation `AGENTS.md` forbids — arrived at one `await` at a time.
+ *
+ * ---
+ *
+ * ## The shape
+ *
+ * The body is cut into **blocks** at every point control can arrive from somewhere other than the
+ * statement above. A block runs its statements and then does one of four things: suspend on a
+ * clock, jump, branch, or finish. Emitted, that is a `for (;;)` around a `switch`, where a jump is
+ * `continue` and a suspend is `return`.
+ *
+ * **Only control flow that contains an `await` is cut.** An `if` or a `while` with no suspend
+ * inside it is emitted as itself, by the ordinary statement emitter, because splitting it would buy
+ * nothing and cost every reader of the output. The cost is a generated body that mixes two shapes;
+ * what would make it wrong is a reader expecting the block list to describe the whole control flow,
+ * which is why this paragraph is here rather than in a commit message.
+ *
+ * ## Locals live on the frame
+ *
+ * Everything a task declares — its parameters and its `let`s — becomes a field on the frame the
+ * scheduler owns, because anything else dies at the `return` that suspends. The rewrite is done on
+ * the IR before emission, so the ordinary expression emitter needs to know nothing about tasks.
+ *
+ * The cost is that two `let`s of one name would be one slot, so that is refused rather than
+ * renamed. **What would make that wrong** is a corpus file that reads better with a shadowed
+ * binding, at which point the fix is alpha-renaming here and not a change to the language.
+ */
+import type { Span } from '../ast.ts';
+import type { IrExpr, IrOwner, IrStmt, IrTask } from '../ir/ir.ts';
+
+/**
+ * A statement inside a block, which is the language's own plus two the cut introduces.
+ *
+ * A `scope` that spans a suspend has no single statement to be: its open and its close land in
+ * different blocks. Those two exist here rather than in `IrStmt` because they are an artefact of
+ * cutting a body into blocks — a second backend that did not cut would never produce one, and
+ * putting them in the shared IR would make every reader of it handle a case only this file emits.
+ */
+export type TaskStmt =
+  | IrStmt
+  | {
+      readonly kind: 'scopeOpen';
+      readonly name: string;
+      readonly parent: IrOwner;
+      readonly span: Span;
+    }
+  | { readonly kind: 'scopeClose'; readonly name: string; readonly span: Span };
+
+/** Where control goes when a block's statements are done. */
+export type Terminator =
+  | { readonly kind: 'jump'; readonly target: number }
+  | {
+      readonly kind: 'branch';
+      readonly condition: IrExpr;
+      readonly then: number;
+      readonly otherwise: number;
+    }
+  | {
+      readonly kind: 'await';
+      readonly clock: 'fixed' | 'frame' | 'wall';
+      readonly duration: IrExpr;
+      readonly next: number;
+    }
+  | {
+      readonly kind: 'awaitTask';
+      readonly task: string;
+      readonly owner: IrOwner;
+      readonly args: readonly IrExpr[];
+      readonly next: number;
+    }
+  | { readonly kind: 'done' };
+
+export interface Block {
+  readonly stmts: TaskStmt[];
+  terminator: Terminator;
+}
+
+/**
+ * The JavaScript expression naming what a spawn or a nested scope belongs to.
+ *
+ * A `scope` block is always inside a task, so its handle is always a frame field — which is why
+ * there is no fourth case for a scope in an ordinary function.
+ */
+export function ownerText(owner: IrOwner): string {
+  switch (owner.kind) {
+    case 'module':
+      return '$rt.scope';
+    case 'task':
+      return '$f.owner';
+    case 'scope':
+      return `$f.${frameField(owner.name)}`;
+  }
+}
+
+/** The frame field a task's binding lives in. Prefixed so it cannot collide with `step` or `clock`. */
+export function frameField(name: string): string {
+  return `$${name}`;
+}
+
+/** Whether any statement in this list, at any depth, suspends. */
+export function containsAwait(stmts: readonly IrStmt[]): boolean {
+  for (const stmt of stmts) {
+    switch (stmt.kind) {
+      case 'await':
+      case 'awaitTask':
+        return true;
+      case 'if':
+      case 'ifLet':
+        if (containsAwait(stmt.then)) return true;
+        if (stmt.otherwise !== null && containsAwait(stmt.otherwise)) return true;
+        break;
+      case 'while':
+      case 'scope':
+        if (containsAwait(stmt.body)) return true;
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+
+/** Every name a task binds: its parameters, then every `let` at any depth. */
+export function frameNames(task: IrTask): string[] {
+  const names = task.params.map((p) => p.name);
+  const walk = (stmts: readonly IrStmt[]): void => {
+    for (const stmt of stmts) {
+      switch (stmt.kind) {
+        case 'let':
+          names.push(stmt.name);
+          break;
+        case 'if':
+        case 'ifLet':
+          walk(stmt.then);
+          if (stmt.otherwise !== null) walk(stmt.otherwise);
+          break;
+        case 'while':
+          walk(stmt.body);
+          break;
+        case 'scope':
+          /* A scope's handle lives on the frame like any other binding: the block it belongs to can
+             span a suspend, and a scope that died at one would leave its tasks unowned. */
+          names.push(stmt.name);
+          walk(stmt.body);
+          break;
+        default:
+          break;
+      }
+    }
+  };
+  walk(task.body);
+  return names;
+}
+
+/** Rewrite every reference to a task binding into a read of the frame field that holds it. */
+function rewriteExpr(expr: IrExpr, bound: ReadonlySet<string>): IrExpr {
+  switch (expr.kind) {
+    case 'local':
+      if (!bound.has(expr.name)) return expr;
+      return {
+        kind: 'field',
+        target: { kind: 'local', name: '$f', type: expr.type, span: expr.span },
+        name: frameField(expr.name),
+        type: expr.type,
+        span: expr.span,
+      };
+    case 'field':
+      return { ...expr, target: rewriteExpr(expr.target, bound) };
+    case 'optionalField':
+      return { ...expr, target: rewriteExpr(expr.target, bound) };
+    case 'binary':
+      return {
+        ...expr,
+        left: rewriteExpr(expr.left, bound),
+        right: rewriteExpr(expr.right, bound),
+      };
+    case 'unary':
+      return { ...expr, operand: rewriteExpr(expr.operand, bound) };
+    case 'call':
+      return { ...expr, args: expr.args.map((a) => rewriteExpr(a, bound)) };
+    case 'record':
+      return {
+        ...expr,
+        fields: expr.fields.map((f) => ({ name: f.name, value: rewriteExpr(f.value, bound) })),
+      };
+    case 'wrap':
+      return { ...expr, value: expr.value === null ? null : rewriteExpr(expr.value, bound) };
+    case 'try':
+      return { ...expr, inner: rewriteExpr(expr.inner, bound) };
+    case 'match':
+      return {
+        ...expr,
+        subject: rewriteExpr(expr.subject, bound),
+        /* An arm's binding is a fresh name the arm introduces, so it is deliberately not rewritten:
+           it never outlives the expression and can never cross a suspend. */
+        arms: expr.arms.map((arm) => ({ ...arm, body: rewriteExpr(arm.body, bound) })),
+      };
+    default:
+      return expr;
+  }
+}
+
+/** The same rewrite over statements, turning a `let` into an assignment to its frame field. */
+export function rewriteStmts(stmts: readonly IrStmt[], bound: ReadonlySet<string>): IrStmt[] {
+  return stmts.map((stmt): IrStmt => {
+    switch (stmt.kind) {
+      case 'let':
+        return {
+          kind: 'assign',
+          target: {
+            kind: 'field',
+            target: { kind: 'local', name: '$f', type: stmt.type, span: stmt.span },
+            name: frameField(stmt.name),
+            type: stmt.type,
+            span: stmt.span,
+          },
+          value: rewriteExpr(stmt.value, bound),
+          span: stmt.span,
+        };
+      case 'assign':
+        return {
+          ...stmt,
+          target: rewriteExpr(stmt.target, bound),
+          value: rewriteExpr(stmt.value, bound),
+        };
+      case 'forQuery':
+        /*
+         * The body is rewritten and the binding is not, which is the same call the `match` arm
+         * above makes and for the same reason: the binding is a fresh name this loop introduces,
+         * it never outlives the loop, and it can never cross a suspend — a query loop may not
+         * `await` at all, because its cursor comes from a pool and is given back when the loop
+         * ends. The body still needs rewriting, because it can read a task local that lives in
+         * the frame.
+         */
+        return { ...stmt, body: rewriteStmts(stmt.body, bound) };
+      case 'return':
+        return { ...stmt, value: stmt.value === null ? null : rewriteExpr(stmt.value, bound) };
+      case 'if':
+        return {
+          ...stmt,
+          condition: rewriteExpr(stmt.condition, bound),
+          then: rewriteStmts(stmt.then, bound),
+          otherwise: stmt.otherwise === null ? null : rewriteStmts(stmt.otherwise, bound),
+        };
+      case 'ifLet':
+        return {
+          ...stmt,
+          subject: rewriteExpr(stmt.subject, bound),
+          then: rewriteStmts(stmt.then, bound),
+          otherwise: stmt.otherwise === null ? null : rewriteStmts(stmt.otherwise, bound),
+        };
+      case 'while':
+        return {
+          ...stmt,
+          condition: rewriteExpr(stmt.condition, bound),
+          body: rewriteStmts(stmt.body, bound),
+        };
+      case 'await':
+        return { ...stmt, duration: rewriteExpr(stmt.duration, bound) };
+      case 'awaitTask':
+        return { ...stmt, args: stmt.args.map((a) => rewriteExpr(a, bound)) };
+      case 'become':
+        return stmt;
+      case 'emit':
+        return {
+          ...stmt,
+          fields: stmt.fields.map((f) => ({ name: f.name, value: rewriteExpr(f.value, bound) })),
+        };
+      case 'spawn':
+        return { ...stmt, args: stmt.args.map((a) => rewriteExpr(a, bound)) };
+      case 'scope':
+        return { ...stmt, body: rewriteStmts(stmt.body, bound) };
+      case 'expr':
+        return { ...stmt, expr: rewriteExpr(stmt.expr, bound) };
+    }
+  });
+}
+
+/**
+ * Cut a rewritten body into blocks.
+ *
+ * The first block is always index 0, which is where `start` leaves the frame pointing.
+ */
+export function blocksOf(body: readonly IrStmt[]): Block[] {
+  const blocks: Block[] = [];
+  const create = (): number => {
+    blocks.push({ stmts: [], terminator: { kind: 'done' } });
+    return blocks.length - 1;
+  };
+
+  const lower = (stmts: readonly IrStmt[], from: number): number => {
+    let current = from;
+    for (const stmt of stmts) {
+      if (stmt.kind === 'await') {
+        const next = create();
+        blocks[current].terminator = {
+          kind: 'await',
+          clock: stmt.clock,
+          duration: stmt.duration,
+          next,
+        };
+        current = next;
+        continue;
+      }
+
+      if (stmt.kind === 'awaitTask') {
+        const next = create();
+        blocks[current].terminator = {
+          kind: 'awaitTask',
+          task: stmt.task,
+          owner: stmt.owner,
+          args: stmt.args,
+          next,
+        };
+        current = next;
+        continue;
+      }
+
+      if (stmt.kind === 'return') {
+        blocks[current].terminator = { kind: 'done' };
+        /* Anything after a `return` is unreachable, and appending it to a block already terminated
+           would emit it before the `return` rather than after. A fresh block collects it and is
+           never jumped to, so the emitter drops it. */
+        current = create();
+        continue;
+      }
+
+      if (stmt.kind === 'if' && containsAwait([stmt])) {
+        const thenBlock = create();
+        const elseBlock = create();
+        const join = create();
+        blocks[current].terminator = {
+          kind: 'branch',
+          condition: stmt.condition,
+          then: thenBlock,
+          otherwise: elseBlock,
+        };
+        blocks[lower(stmt.then, thenBlock)].terminator = { kind: 'jump', target: join };
+        blocks[lower(stmt.otherwise ?? [], elseBlock)].terminator = { kind: 'jump', target: join };
+        current = join;
+        continue;
+      }
+
+      if (stmt.kind === 'scope' && containsAwait([stmt])) {
+        /*
+         * A scope that spans a suspend is not one block: the create runs where the block opens, the
+         * body is cut wherever it suspends, and the leave runs at the end of whatever block the
+         * body finished in. A task that returns out of the middle never reaches that leave, which
+         * is why every task has a scope of its own that is left however it ends.
+         */
+        blocks[current].stmts.push({ kind: 'scopeOpen', name: stmt.name, parent: stmt.parent, span: stmt.span });
+        const end = lower(stmt.body, current);
+        blocks[end].stmts.push({ kind: 'scopeClose', name: stmt.name, span: stmt.span });
+        current = end;
+        continue;
+      }
+
+      if (stmt.kind === 'while' && containsAwait([stmt])) {
+        const head = create();
+        const body = create();
+        const exit = create();
+        blocks[current].terminator = { kind: 'jump', target: head };
+        blocks[head].terminator = {
+          kind: 'branch',
+          condition: stmt.condition,
+          then: body,
+          otherwise: exit,
+        };
+        blocks[lower(stmt.body, body)].terminator = { kind: 'jump', target: head };
+        current = exit;
+        continue;
+      }
+
+      blocks[current].stmts.push(stmt);
+    }
+    return current;
+  };
+
+  const entry = create();
+  const last = lower(body, entry);
+  blocks[last].terminator = { kind: 'done' };
+  return blocks;
+}

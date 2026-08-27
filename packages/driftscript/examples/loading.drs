@@ -1,0 +1,52 @@
+// Failure is a value, and absence is a type.
+//
+// `load` cannot throw. Its caller either handles both cases or propagates with `?`, and the
+// compiler is what makes that a choice rather than an oversight.
+
+enum LoadError {
+    Missing
+    Corrupt
+}
+
+data Resource {
+    size: f32 = 0
+}
+
+fn load(present: bool) -> Result<Resource, LoadError> {
+    if present {
+        return Ok(Resource { size: 1024 })
+    } else {
+        return Err(LoadError.Missing)
+    }
+}
+
+// Propagate: on failure this returns the error unchanged, on success it continues.
+fn sizeOf(present: bool) -> Result<f32, LoadError> {
+    let resource = load(present)?
+    return Ok(resource.size)
+}
+
+// Or handle both cases explicitly.
+fn sizeOrZero(present: bool) -> f32 {
+    return match load(present) {
+        Ok(resource) => resource.size
+        Err(problem) => 0
+    }
+}
+
+// An option is how a value says it might not be there. There is no null.
+fn firstOrNone(present: bool) -> f32? {
+    if present {
+        return some(1)
+    } else {
+        return none
+    }
+}
+
+fn readOr(value: f32?, fallback: f32) -> f32 {
+    if let found = value {
+        return found
+    } else {
+        return fallback
+    }
+}

@@ -1,0 +1,48 @@
+name: Bug report
+description: Something the compiler, the runtime or the language server got wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **A `.drs` file is worth more than a description of one.** A compiler bug is almost always a
+        file, and a file we can run is the difference between a fix today and a conversation this
+        week.
+
+        For anything exploitable, use [Security](https://github.com/drftrun/driftscript/security/advisories/new)
+        instead of this form.
+  - type: textarea
+    id: source
+    attributes:
+      label: The .drs that reproduces it
+      description: The smallest file that still goes wrong. It is fine if it is not small.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+      description: |
+        If it is a diagnostic, paste it in full — the code, the span and the words. If it is
+        generated code, paste the part that is wrong.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: '`npm ls driftscript`'
+      placeholder: 1.4.0
+    validations:
+      required: true
+  - type: textarea
+    id: host
+    attributes:
+      label: Your host, if the bug involves one
+      description: |
+        Which `drift/*` or other non-`std` modules your target provides, and whether you configured
+        the plugin with `registry` or with `capabilities`. A build with neither checks nothing, and
+        that changes what counts as a bug.
+    validations:
+      required: false

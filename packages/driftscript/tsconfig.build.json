@@ -1,0 +1,49 @@
+{
+  /*
+   * What a consumer installs.
+   *
+   * `rewriteRelativeImportExtensions` is the whole reason this file exists. The source names `.ts`
+   * on every relative import so that `node` can load the Vite plugin straight out of the checkout,
+   * and this turns each of those into `.js` on the way into `dist/`. Without it the package would
+   * have to ship its source and ask a stranger to set `allowImportingTsExtensions` before their
+   * project would typecheck — and Node refuses to strip types for anything under `node_modules`
+   * anyway, so the plugin, the compiler and the language server would all fail on the first import
+   * from a registry install while passing every test in this repository.
+   *
+   * `types: ["node"]` is correct here and would be wrong in `tsconfig.json`. The plugin genuinely
+   * is Node code and this config compiles it; the guarantee that no Node global reaches the
+   * *runtime* lives in the typecheck config, which sets `"types": []` and runs on every commit.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  /*
+   * Tests are not built, for the same reason they are not packed: they are this package's own
+   * review, they are a third of its unpacked size, and a reader who opens the tarball to judge the
+   * language should find the language.
+   *
+   * The grammar generator is excluded because it is a `.mjs` tool that reads the disk at
+   * development time. It ships in `src/` so that an editor author can regenerate the TextMate
+   * grammar from the compiler's token table, and it is not part of any entry point.
+   */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.mjs", "src/tooling"]
+}

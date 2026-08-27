@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    The same caret, for a light explorer. See `driftscript-dark.svg` for the mark and the geometry,
+    which are identical here; only the colour moves.
+
+    **The colour is derived, not picked.** DriftScript's accent is #f0a437, which is hue 35 degrees,
+    saturation 86%, lightness 58%. This keeps the hue and the saturation and takes the lightness to
+    34%, giving #a1640c. The point of holding hue and saturation is that it stays recognisably the
+    same warm signal instead of becoming a different brown.
+
+    Measured against VSCode's light tree at #f3f3f3: the accent as shipped is 1.88:1, which is
+    invisible, and this is 4.36:1. Against pure white, 4.83:1. The floor for a graphical object is
+    3:1, so there is room left for a theme lighter than the default.
+  -->
+  <path d="M14 23 L32 41 L50 23" fill="none" stroke="#a1640c" stroke-width="9"
+        stroke-linecap="square" stroke-linejoin="miter" />
+</svg>

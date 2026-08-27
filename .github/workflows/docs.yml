@@ -1,0 +1,27 @@
+name: Docs
+
+# The cheap half of CI. No install, no build, no compiler — just the link checker, which is the
+# one thing a documentation change can break.
+#
+# It stays that way on purpose. The link checker asks `scripts/build.mjs` what the build writes
+# rather than needing the build to have run, because a check that needs a compiler is a check that
+# gets skipped on the change most likely to break a link.
+on:
+  push:
+    branches: [main]
+    paths: ['**/*.md']
+  pull_request:
+    paths: ['**/*.md']
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+      - run: node --test scripts/docs.test.mjs

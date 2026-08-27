@@ -1,0 +1,60 @@
+name: Release
+
+# Nothing here runs on a push. A release happens when somebody chooses one, and the default is a
+# dry run — `publish` has to be typed to mean it.
+#
+# `docs/RELEASING.md` is the procedure. This workflow exists for one reason beyond convenience:
+# `--provenance` needs a public repository and a runner with an OIDC identity, and a laptop has
+# neither.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type `publish` to publish. Anything else is a dry run.'
+        required: true
+        default: 'dry-run'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:scripts
+
+      # The gate. Ten rows, against a packed tarball, in a clean room outside the workspace —
+      # because checking the workspace copy is what hid the defect this whole build exists for.
+      - run: npm run publish:check
+
+      # In order. `driftscript-language` pins `driftscript` exactly, so publishing it first lists a
+      # package whose dependency does not exist yet: npm accepts that and a consumer's install
+      # does not.
+      - name: Publish driftscript
+        if: inputs.confirm == 'publish'
+        run: npm publish -w driftscript --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish driftscript-language
+        if: inputs.confirm == 'publish'
+        run: npm publish -w driftscript-language --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run
+        if: inputs.confirm != 'publish'
+        run: |
+          echo "Every gate is green and nothing was published."
+          echo "Re-run with confirm=publish to publish $(node -p "require('./package.json').version")."

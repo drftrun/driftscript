@@ -1,0 +1,33 @@
+{
+  /*
+   * What an editor installs. The reasoning is `packages/driftscript/tsconfig.build.json`'s, and
+   * this package is the sharper case of it: a language server *is* a Node process, so every path
+   * through it is one Node's `node_modules` type-stripping refusal would have closed.
+   *
+   * It resolves `driftscript` through the workspace, so that package is built first —
+   * `scripts/build.mjs` holds the order.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.mjs"]
+}

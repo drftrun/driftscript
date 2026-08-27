@@ -1,0 +1,20 @@
+// A record, a mutation, and the two things the compiler will not let you skip.
+//
+// `door` is `mut`, so its fields may be written. `by` is not, so it may only be read. A record
+// literal gives every field a value — there is no partial construction.
+
+data Door {
+    open: bool = false
+    angle: f32 = 0
+}
+
+fn swing(door: mut Door, by: f32) {
+    door.angle += by
+    if door.angle > 45deg {
+        door.open = true
+    }
+}
+
+fn closed() -> Door {
+    return Door { open: false, angle: 0 }
+}

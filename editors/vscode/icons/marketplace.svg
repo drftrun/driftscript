@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!--
+    The marketplace listing's icon: the same caret, on the tile the file icons drop.
+    
+    An exact 4x scale of script.driftengine.dev's favicon, geometry and colours unchanged, so the
+    listing and the site show one mark. The tile belongs here and not on a file icon: a marketplace
+    card draws this at 128 pixels against the gallery's own background, where the framing is what
+    separates the mark from the card, and a file tree draws it at sixteen against a row of other
+    icons, where a filled block fights every one of them.
+    
+    The marketplace takes a PNG and not an SVG, so `marketplace.png` sits beside this and is what
+    the manifest names. It is rendered with:
+    
+        convert -background none -density 384 icons/marketplace.svg -resize 128x128 icons/marketplace.png
+    
+    Committed rather than generated, because the alternative is a rasteriser in the dependency tree
+    to produce one 128-pixel image. `scripts/editors.test.mjs` checks the PNG is present and big
+    enough; nothing can check it still matches this file, so edit both or neither.
+  -->
+  <rect width="128" height="128" rx="24" fill="#05070c" />
+  <path d="M36 48 L64 76 L92 48" fill="none" stroke="#f0a437" stroke-width="14"
+        stroke-linecap="square" stroke-linejoin="miter" />
+</svg>
