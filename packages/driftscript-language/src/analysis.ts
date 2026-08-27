@@ -16,7 +16,7 @@ import type { CapabilityDefinition, CapabilityRegistry } from 'driftscript';
 
 /** A declaration a file makes, flattened for the features that list or jump to them. */
 export interface Declaration {
-  readonly kind: 'data' | 'enum' | 'fn' | 'field' | 'variant';
+  readonly kind: 'data' | 'enum' | 'fn' | 'field' | 'variant' | 'constant';
   readonly name: string;
   /** The whole declaration, for a symbol tree. */
   readonly span: Span;
@@ -266,6 +266,17 @@ export function analyse(text: string, uri: string): Analysis {
         span: decl.span,
         nameSpan,
         detail: `${annotations === '' ? '' : `${annotations} `}${head} ${decl.name}(${params})${returns}`,
+        children: [],
+      });
+    } else if (decl.kind === 'const') {
+      /* A module constant reads as a constant in an outline rather than as a variable: it is the
+         one binding in the language that cannot be written to, and the symbol says so. */
+      declarations.push({
+        kind: 'constant',
+        name: decl.name,
+        span: decl.span,
+        nameSpan,
+        detail: `let ${decl.name}${decl.type === undefined ? '' : `: ${typeText(decl.type)}`}`,
         children: [],
       });
     } else {

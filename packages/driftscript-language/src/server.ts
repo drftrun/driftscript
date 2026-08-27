@@ -293,6 +293,7 @@ export function attachServer(
       fn: SymbolKind.Function,
       field: SymbolKind.Field,
       variant: SymbolKind.EnumMember,
+      constant: SymbolKind.Constant,
     };
     const convert = (declaration: Declaration): DocumentSymbol => ({
       name: declaration.name,

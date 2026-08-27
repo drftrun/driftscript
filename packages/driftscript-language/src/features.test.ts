@@ -381,3 +381,51 @@ describe('a record with a base, in the editor', () => {
     expect(open().hover('a.drs', at)?.contents).toContain('Dog');
   });
 });
+
+describe('a module constant in the editor', () => {
+  const SRC = 'let SECONDS_PER_HOUR = 3600\nlet LABEL: String = "hour"\n\nfn f() -> f32 {\n    return SECONDS_PER_HOUR\n}\n';
+
+  const open = () => {
+    const s = createService({ registry: registry(), manifest: FULL });
+    s.open('a.drs', SRC);
+    return s;
+  };
+
+  it('appears in the outline, with its annotation when it has one', () => {
+    /*
+     * **The case CI caught and this repository could not.** The outline chain is exhaustive on
+     * `never`, so a declaration kind with no branch is a build error — and the build passed locally
+     * for days against a stale nested copy of the compiler that had never heard of a module
+     * constant. `scripts/workspace.test.mjs` is the guard for the staleness; this is the branch.
+     */
+    expect(open().documentSymbols('a.drs').map((d) => d.detail)).toEqual([
+      'let SECONDS_PER_HOUR',
+      'let LABEL: String',
+      'fn f() -> f32',
+    ]);
+  });
+
+  it('is a constant rather than a struct, so an outline does not call it a type', () => {
+    expect(open().documentSymbols('a.drs').map((d) => d.kind)).toEqual([
+      'constant',
+      'constant',
+      'fn',
+    ]);
+  });
+
+  it('colours as a value where a body names it', () => {
+    /* Not as a type: colouring it that way would make `SECONDS_PER_HOUR` look like `f32`. */
+    const at = SRC.indexOf('SECONDS_PER_HOUR', SRC.indexOf('return'));
+    const token = open()
+      .semanticTokens('a.drs')
+      .find((t) => t.span.start === at);
+    expect(token?.type).toBe('variable');
+  });
+
+  it('is offered by completion as a value rather than as a type', () => {
+    const items = open().completions('a.drs', SRC.indexOf('return') + 'return '.length);
+    const constant = items.find((i) => i.label === 'SECONDS_PER_HOUR');
+    expect(constant?.kind).toBe('constant');
+  });
+});
+

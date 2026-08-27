@@ -116,9 +116,22 @@ export function definition(
   return null;
 }
 
+/**
+ * What a declaration completes as.
+ *
+ * A module constant is neither: it is a value a body names, and offering it as a type would put
+ * `SECONDS_PER_HOUR` in the list beside `f32`. Everything that is not a function or a constant is a
+ * type, which is what a record, an enum, a field and a variant all are from a completion's side.
+ */
+function completionKindOf(kind: Declaration['kind']): CompletionItem['kind'] {
+  if (kind === 'fn') return 'function';
+  if (kind === 'constant') return 'constant';
+  return 'type';
+}
+
 export interface CompletionItem {
   readonly label: string;
-  readonly kind: 'capability' | 'keyword' | 'type' | 'function' | 'module';
+  readonly kind: 'capability' | 'keyword' | 'type' | 'function' | 'module' | 'constant';
   /** Whether the configured target links it. An unavailable item is offered and marked, not hidden. */
   readonly available: boolean;
   readonly detail: string;
@@ -174,10 +187,13 @@ export function completions(
   for (const primitive of PRIMITIVES) {
     items.push({ label: primitive, kind: 'type', available: true, detail: 'primitive type' });
   }
+
   for (const declaration of analysis.declarations) {
     items.push({
       label: declaration.name,
-      kind: declaration.kind === 'fn' ? 'function' : 'type',
+      /* A constant completes as a variable rather than as a type: it is a value a body names, and
+         offering it where a type is wanted would put it beside `f32` in the list. */
+      kind: completionKindOf(declaration.kind),
       available: true,
       detail: declaration.detail,
     });
@@ -279,6 +295,9 @@ export function semanticTokens(
 
     const declaration = declared.get(token.text);
     if (declaration !== undefined) {
+      /* Highlighted as a variable, for the reason the completion list gives: a constant is a value,
+         and colouring it as a type would make `SECONDS_PER_HOUR` look like `f32`. */
+      if (declaration.kind === 'constant') return push('variable');
       return push(declaration.kind === 'fn' ? 'function' : 'type');
     }
 
