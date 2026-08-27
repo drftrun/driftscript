@@ -177,6 +177,8 @@ function irTypeOf(type: Type | undefined): IrType {
       return { kind: 'entity' };
     case 'enum':
       return { kind: 'enum', name: type.name };
+    case 'list':
+      return { kind: 'list', of: irTypeOf(type.of) };
     case 'option':
       return { kind: 'option', inner: irTypeOf(type.inner) };
     case 'result':
@@ -362,6 +364,21 @@ class Lowering {
           span: node.span,
         };
       }
+      case 'listLiteral':
+        return {
+          kind: 'listLiteral',
+          items: node.items.map((item) => this.expr(item)),
+          type,
+          span: node.span,
+        };
+      case 'index':
+        return {
+          kind: 'index',
+          target: this.expr(node.target),
+          at: this.expr(node.at),
+          type,
+          span: node.span,
+        };
       case 'record':
         return {
           kind: 'record',
@@ -509,6 +526,16 @@ class Lowering {
         const body = node.body.map((s) => this.stmt(s));
         this.enclosing.pop();
         return { kind: 'while', condition, body, span: node.span };
+      }
+      case 'forList': {
+        /* Numbered by the same depth counter a query loop uses, so a list walk inside a query loop
+           and a query loop inside a list walk both get distinct temporaries. */
+        const depth = this.enclosing.length;
+        const subject = this.expr(node.subject);
+        this.enclosing.push({ kind: 'while' });
+        const body = node.body.map((s) => this.stmt(s));
+        this.enclosing.pop();
+        return { kind: 'forList', binding: node.binding, subject, depth, body, span: node.span };
       }
       case 'loopJump': {
         const inner = this.enclosing[this.enclosing.length - 1];
@@ -665,15 +692,34 @@ class Lowering {
   }
 
   system(decl: SystemDecl, access: Access | undefined): IrSystem {
+    /*
+     * **What was inferred, plus what was declared** — and the union is the half that took a bug to
+     * find.
+     *
+     * This used to be the inferred sets alone, on the reasoning that a declaration is an assertion
+     * the checker verified and the engine needs the truth. That is right whenever the compiler can
+     * see the access, and it is wrong exactly where it cannot: a capability naming a component with
+     * a *string* — `ecs.read(world, e, "Position", "x")`, or a host's spatial query — is invisible
+     * to inference, so the component never reached the metadata, and a host that enforces declared
+     * access refused the call at runtime. There was no way for the author to grant it: writing
+     * `reads Position` was checked and then dropped.
+     *
+     * So a declaration now *adds*. Under-declaring is still an error, so this cannot hide a
+     * mistake; over-declaring costs a scheduler that serialises two systems it could have run
+     * together, which is the safe direction to be wrong in.
+     *
+     * A system with no clauses is still fully described by inference alone, which is what keeps the
+     * quiet form quiet.
+     */
+    const reads = new Set([...(access?.reads ?? []), ...decl.reads.map((r) => r.name)]);
+    const writes = new Set([...(access?.writes ?? []), ...decl.writes.map((w) => w.name)]);
+    /* A declared write is a declared read, matching `checkSystemDeclarations` and the engine. */
+    for (const written of writes) reads.add(written);
+
     return {
       name: decl.name,
-      /*
-       * The **inferred** sets, not what the author declared. The declaration is an assertion the
-       * checker verified; the engine needs the truth, and a system that declared nothing is fully
-       * described here all the same.
-       */
-      reads: [...(access?.reads ?? [])],
-      writes: [...(access?.writes ?? [])],
+      reads: [...reads],
+      writes: [...writes],
       after: decl.after.map((a) => a.name),
       everyTicks: decl.everyTicks,
       body: decl.body.map((s) => this.stmt(s)),

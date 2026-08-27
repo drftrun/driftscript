@@ -44,7 +44,7 @@ DriftScript has two module namespaces and the difference between them is the dif
 the language and its host.
 
 ```text
-std/core   std/math   std/result   std/collections   std/time
+std/core   std/math   std/result   std/time
 ```
 
 **`std/*` is the language's own library.** It is available in every host, it is `pure`, and it
@@ -133,9 +133,38 @@ That is the whole primitive set. **`Vec3`, `Quat`, `Mat4`, `Transform` and `Colo
 types** — they arrive through a linked capability, from whatever maths the host provides. A consumer
 with no renderer still has a language.
 
-Two parameterised types are built in, `T?` and `Result<T, E>`, and both are described below. You
-cannot declare your own generic type; nothing in the language needs one, and the two that exist are
-about failure rather than abstraction.
+Three parameterised types are built in — `T?`, `Result<T, E>` and `List<T>` — and all three are
+described below. You cannot declare your own generic type.
+
+### Lists
+
+```drs
+let names = ["clear", "cloud", "rain", "storm"]
+let n = len(names)          // u32
+let third = names[2]        // "rain", and an index past the end throws
+
+var queue: List<f32> = []
+push(queue, 1)
+
+for name in names {
+    // …
+}
+```
+
+`[a, b]`, `xs[i]`, `len`, `push` and `for … in` are **language forms rather than a module**, which
+is why there is no `std/collections` — a capability's parameter types are names in a data format a
+host writes, and a module function over `List<T>` would need a type variable there.
+
+**An index past the end throws**, for the reason integer overflow does: JavaScript's own answer is
+`undefined`, which a script has no type for, and it would surface as a `NaN` frames later somewhere
+else.
+
+**`push` needs a `mut` binding**, because growing a list is writing to the container — the same rule
+a record field follows.
+
+**A list is invariant.** A `List<Wolf>` is not a `List<Dog>` even though a `Wolf` is a `Dog`. With
+covariance a `Dog` could be pushed through a reference whose real list holds `Wolf`, and record
+subtyping is sound here partly because that cannot happen.
 
 A bare number literal is `f32`, because the engines this language targets compute in single
 precision. A literal takes a different width when something gives it one:

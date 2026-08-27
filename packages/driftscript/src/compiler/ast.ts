@@ -81,6 +81,15 @@ export type Expr =
       readonly span: Span;
     }
   /** `expr?` — propagate an `Err` or a `None` to the caller. */
+  /** `[a, b, c]` — a list literal. Empty needs a type from its context, like `none` does. */
+  | { readonly kind: 'listLiteral'; readonly items: readonly Expr[]; readonly span: Span }
+  /**
+   * `xs[i]` — the one indexing form.
+   *
+   * A postfix like a call rather than a method, because `xs.at(i)` would be the language's only
+   * method and would need a receiver rule nothing else has.
+   */
+  | { readonly kind: 'index'; readonly target: Expr; readonly at: Expr; readonly span: Span }
   | { readonly kind: 'try'; readonly inner: Expr; readonly span: Span }
   | {
       readonly kind: 'match';
@@ -151,6 +160,21 @@ export type Stmt =
       readonly kind: 'forQuery';
       readonly binding: string;
       readonly query: QuerySpec;
+      readonly body: readonly Stmt[];
+      readonly span: Span;
+    }
+  /**
+   * `for item in xs { … }` — a walk over a list.
+   *
+   * Kept apart from `forQuery` rather than folded into one node with a subject, because the two
+   * share a keyword and nothing else: a query loop resolves components, plans views, and may not
+   * suspend; this one binds a value and has none of that. One node carrying both would be a node
+   * every reader has to check the shape of.
+   */
+  | {
+      readonly kind: 'forList';
+      readonly binding: string;
+      readonly subject: Expr;
       readonly body: readonly Stmt[];
       readonly span: Span;
     }

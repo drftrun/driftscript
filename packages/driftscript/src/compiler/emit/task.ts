@@ -270,6 +270,10 @@ export function rewriteStmts(stmts: readonly IrStmt[], bound: ReadonlySet<string
       case 'loopJump':
         /* A keyword and a cursor depth, neither of which can name a task local. */
         return stmt;
+      case 'forList':
+        /* The subject is an expression and may name a task local; the binding is this loop's own
+           and never outlives it, which is the call `forQuery` makes one case up. */
+        return { ...stmt, subject: rewriteExpr(stmt.subject, bound), body: rewriteStmts(stmt.body, bound) };
       case 'emit':
         return {
           ...stmt,

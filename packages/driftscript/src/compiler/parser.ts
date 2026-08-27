@@ -1845,6 +1845,34 @@ class Parser {
       this.resynchronise();
       return null;
     }
+    /*
+     * `for x in query<…>()` and `for x in xs` share a keyword and nothing else.
+     *
+     * Told apart by the word after `in`, which is the only place they can differ: `query` is a
+     * keyword, so no expression can begin with it and the test cannot misread a list whose variable
+     * happens to be called that. Anything else is an expression yielding a list.
+     */
+    if (!this.check('keyword', 'query')) {
+      /* Through `parseCondition`, which is what suppresses a record literal: `for x in xs {` puts a
+         brace on the same line as an identifier, which is exactly the record-literal shape, and
+         without this the loop's own body was parsed as `xs { … }`. The same resolution `if` and
+         `while` already take, and a subject that genuinely is a record literal parenthesises it. */
+      const subject = this.parseCondition();
+      if (subject === null) {
+        this.resynchronise();
+        return null;
+      }
+      const listBody = this.parseBlock();
+      if (listBody === null) return null;
+      return {
+        kind: 'forList',
+        binding: binding.text,
+        subject,
+        body: listBody.stmts,
+        span: { start, end: listBody.end },
+      };
+    }
+
     const query = this.parseQuerySpec();
     if (query === null) {
       this.resynchronise();
@@ -2023,6 +2051,16 @@ class Parser {
         continue;
       }
 
+      if (this.check('punct', '[')) {
+        this.next();
+        const at = this.parseExpr();
+        if (at === null) return null;
+        const close = this.expect('punct', ']', 'DS0110');
+        if (close === null) return null;
+        expr = { kind: 'index', target: expr, at, span: { start: expr.span.start, end: close.end } };
+        continue;
+      }
+
       if (this.check('punct', '(')) {
         this.next();
         const args: Expr[] = [];
@@ -2125,6 +2163,22 @@ class Parser {
     if (token.kind === 'keyword' && isPrimitive(token.text)) {
       this.next();
       return { kind: 'ident', name: token.text, span: { start: token.start, end: token.end } };
+    }
+
+    if (this.check('punct', '[')) {
+      const open = this.next();
+      const items: Expr[] = [];
+      /* A trailing comma is accepted the way a call's argument list accepts one: the loop takes a
+         comma and then re-tests for the closing bracket. */
+      while (!this.atEnd() && !this.check('punct', ']')) {
+        const item = this.parseExpr();
+        if (item === null) return null;
+        items.push(item);
+        if (this.accept('punct', ',') === null) break;
+      }
+      const close = this.expect('punct', ']', 'DS0110');
+      if (close === null) return null;
+      return { kind: 'listLiteral', items, span: { start: open.start, end: close.end } };
     }
 
     if (this.check('punct', '(')) {

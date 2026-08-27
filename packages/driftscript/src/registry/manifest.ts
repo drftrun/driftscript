@@ -15,11 +15,22 @@
  * per host is not standard. Every host inherits these unchanged; what a host chooses is its own
  * prefix's modules.
  */
+/*
+ * **`std/collections` was here and never existed**, which is the advertisement a consumer reported.
+ *
+ * It was listed as a standard module and in the language reference, and no capability was ever
+ * registered under it — so a script that imported it was told the module had no such capability,
+ * by a compiler that had promised the module in two documents. Lists arrived in 1.6.0 as language
+ * forms rather than as a module: `[a, b]`, `xs[i]`, `len`, `push` and `for … in` are built in,
+ * because a capability's parameter types are *names* in a published data format and a module
+ * function over `List<T>` would have needed a type variable there for a host to get wrong.
+ *
+ * So the entry is gone rather than filled in. What replaced it is in `LANGUAGE.md` under Types.
+ */
 export const STD_MODULES: readonly string[] = [
   'std/core',
   'std/math',
   'std/result',
-  'std/collections',
   'std/time',
 ];
 

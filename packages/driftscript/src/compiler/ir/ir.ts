@@ -37,6 +37,8 @@ export type IrType =
   | { readonly kind: 'entity' }
   | { readonly kind: 'data'; readonly name: string }
   | { readonly kind: 'enum'; readonly name: string }
+  /** `List<T>`, which every backend represents as its own array type. */
+  | { readonly kind: 'list'; readonly of: IrType }
   | { readonly kind: 'option'; readonly inner: IrType }
   | { readonly kind: 'result'; readonly ok: IrType; readonly err: IrType };
 
@@ -121,6 +123,15 @@ export type IrExpr =
       readonly type: IrType;
       readonly span: Span;
     }
+  | { readonly kind: 'listLiteral'; readonly items: readonly IrExpr[]; readonly type: IrType; readonly span: Span }
+  /**
+   * `xs[i]`, with a bounds check the backend emits.
+   *
+   * **Checked rather than trusted, for the reason integer arithmetic is checked**: this language has
+   * no undefined behaviour, and JavaScript's own answer to an index past the end is `undefined` —
+   * which then flows into arithmetic as `NaN` and surfaces three frames later somewhere else.
+   */
+  | { readonly kind: 'index'; readonly target: IrExpr; readonly at: IrExpr; readonly type: IrType; readonly span: Span }
   | {
       readonly kind: 'record';
       readonly name: string;
@@ -209,6 +220,15 @@ export type IrStmt =
   | {
       readonly kind: 'while';
       readonly condition: IrExpr;
+      readonly body: readonly IrStmt[];
+      readonly span: Span;
+    }
+  /** `for item in xs { … }`. The depth numbers the loop's own temporaries, as `forQuery` does. */
+  | {
+      readonly kind: 'forList';
+      readonly binding: string;
+      readonly subject: IrExpr;
+      readonly depth: number;
       readonly body: readonly IrStmt[];
       readonly span: Span;
     }

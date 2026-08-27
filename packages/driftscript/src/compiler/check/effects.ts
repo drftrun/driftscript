@@ -159,6 +159,11 @@ function calleesOf(decl: FnDecl): ReadonlySet<string> {
       case 'become':
         /* A state name and nothing else. There is no expression here to walk. */
         return;
+      case 'forList':
+        /* The list being walked is an expression and may hold a call; the body is statements. */
+        fromExpr(stmt.subject);
+        stmt.body.forEach(fromStmt);
+        return;
       case 'loopJump':
         /* A keyword and nothing else, so there is no call inside it to infer an effect from. Named
            rather than left to the `default`, because the `default` is a compile error on purpose. */

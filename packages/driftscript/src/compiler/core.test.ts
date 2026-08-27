@@ -624,3 +624,93 @@ describe('a module constant', () => {
   });
 });
 
+describe('a list', () => {
+  it('is indexed, which is what a chain of `if` was standing in for', async () => {
+    /* The shape a consumer reported: a twenty-two-line chain of `if` over an index, because there
+       was no collection type and `std/collections` was advertised and empty. */
+    const mod = await run(
+      'fn skyName(index: u32) -> String {\n' +
+        '    let names = ["clear", "cloud", "rain", "storm"]\n' +
+        '    if index >= len(names) {\n        return "unknown"\n    }\n' +
+        '    return names[index]\n}\n',
+    );
+    expect(mod.skyName(2 as never)).toBe('rain');
+    expect(mod.skyName(9 as never)).toBe('unknown');
+  });
+
+  it('is walked by `for … in`', async () => {
+    const mod = await run(
+      'fn total(xs: List<f32>) -> f32 {\n' +
+        '    var sum = 0\n    for x in xs {\n        sum += x\n    }\n    return sum\n}\n',
+    );
+    expect(mod.total([1, 2, 3] as never)).toBe(6);
+  });
+
+  it('grows through `push`, and an empty one takes its type from its annotation', async () => {
+    const mod = await run(
+      'fn grow() -> u32 {\n    var xs: List<f32> = []\n' +
+        '    push(xs, 1)\n    push(xs, 2)\n    return len(xs)\n}\n',
+    );
+    expect(mod.grow()).toBe(2);
+  });
+
+  it('throws on an index past the end rather than answering `undefined`', async () => {
+    /* The same decision integer overflow got. JavaScript's own answer is `undefined`, which a
+       script has no type for: it flows into arithmetic as `NaN` and surfaces frames later,
+       somewhere with nothing to do with the read. */
+    const mod = await run('fn f(xs: List<f32>, i: u32) -> f32 {\n    return xs[i]\n}\n');
+    expect(() => mod.f([1, 2] as never, 5 as never)).toThrow(/outside a list of 2/);
+  });
+
+  it('is invariant, which is what keeps record subtyping sound', () => {
+    /*
+     * **The rule `types.ts` demanded in writing before this existed.** Its note on width subtyping
+     * said the soundness argument rested on there being no container, and told whoever added one to
+     * write an invariance rule in the same commit. With covariance a `List<Wolf>` passed as a
+     * `List<Dog>` could have a plain `Dog` pushed into it, and the caller's next read would find a
+     * `Dog` in a list whose type says `Wolf`.
+     */
+    const source =
+      'data Dog {\n    energy: f32 = 1\n}\n\ndata Wolf : Dog {\n    pack: f32 = 1\n}\n\n' +
+      'fn take(xs: List<Dog>) -> u32 {\n    return len(xs)\n}\n\n' +
+      'fn f(ws: List<Wolf>) -> u32 {\n    return take(ws)\n}\n';
+    const result = compile(source);
+    expect(result.diagnostics[0]?.code).toBe('DS0263');
+    expect(result.diagnostics[0]?.message).toContain('List<Wolf>');
+    /* A record still widens; only the container does not. */
+    expect(
+      codesOf(
+        'data Dog {\n    energy: f32 = 1\n}\n\ndata Wolf : Dog {\n    pack: f32 = 1\n}\n\n' +
+          'fn take(d: Dog) -> f32 {\n    return d.energy\n}\n\n' +
+          'fn f(w: Wolf) -> f32 {\n    return take(w)\n}\n',
+      ),
+    ).toEqual([]);
+  });
+
+  it('refuses an empty list with no type to take, like `none`', () => {
+    expect(codesOf('fn f() {\n    let xs = []\n}\n')).toContain('DS0244');
+  });
+
+  it('refuses a mixed literal, an index of a non-list, and a walk over one', () => {
+    expect(codesOf('fn f() {\n    let xs = [1, "two"]\n}\n')).toContain('DS0245');
+    expect(codesOf('fn f(n: f32) -> f32 {\n    return n[0]\n}\n')).toContain('DS0246');
+    expect(codesOf('fn f(n: f32) {\n    for x in n {\n    }\n}\n')).toContain('DS0246');
+  });
+
+  it('needs `mut` to push, because growing a list writes to the container', () => {
+    expect(codesOf('fn f() {\n    let xs = [1]\n    push(xs, 2)\n}\n')).toContain('DS0201');
+    expect(codesOf('fn f() {\n    var xs = [1]\n    push(xs, "a")\n}\n')).toContain('DS0245');
+  });
+
+  it('leaves a list walk on `break` and skips a turn on `continue`', async () => {
+    const mod = await run(
+      'fn upTo(xs: List<f32>, limit: f32) -> f32 {\n' +
+        '    var sum = 0\n    for x in xs {\n' +
+        '        if x < 0 {\n            continue\n        }\n' +
+        '        if x > limit {\n            break\n        }\n' +
+        '        sum += x\n    }\n    return sum\n}\n',
+    );
+    expect(mod.upTo([1, -5, 2, 99, 3] as never, 10 as never)).toBe(3);
+  });
+});
+

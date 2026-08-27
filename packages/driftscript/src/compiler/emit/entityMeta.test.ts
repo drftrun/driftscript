@@ -80,12 +80,41 @@ describe('the metadata a host builds a world from', () => {
     expect((placement.components as { fromHost: boolean }[])[0]?.fromHost).toBe(true);
   });
 
-  it('carries the inferred reads and writes, not what the author declared', () => {
+  it('carries what was inferred, so a system that declares nothing is still described', () => {
     const placement = metadataOf(compile('development'));
     const systems = placement.systems as { name: string; reads: string[]; writes: string[] }[];
     const feeder = systems.find((s) => s.name === 'Feeder');
     expect(feeder?.writes).toEqual(['Hunger']);
     expect(feeder?.reads).toEqual(['Hunger']);
+  });
+
+  it('carries a declared component the compiler could not infer', () => {
+    /*
+     * **The case that made this a union rather than the inferred sets alone.**
+     *
+     * A capability naming a component with a *string* — `ecs.read(world, e, "Position", "x")`, or a
+     * host's spatial query — is invisible to access inference. The metadata therefore never
+     * mentioned `Position`, and a host that enforces declared access refused the call at runtime
+     * with the system's own name on it. Writing `reads Position` did not help: it was checked and
+     * then dropped, so there was no way for an author to grant what the compiler could not see.
+     *
+     * Over-declaring is the safe direction: it costs a scheduler that serialises two systems it
+     * could have run together. Under-declaring is still an error, so this cannot hide a mistake.
+     */
+    const source =
+      'component Position {\n    x: f64 = 0\n}\n\n' +
+      'component Alarm {\n    level: f64 = 0\n}\n\n' +
+      'system Watch {\n    reads Position\n    writes Alarm\n\n    update {\n' +
+      '        for e in query<Alarm>() {\n            e.Alarm.level = 1\n        }\n' +
+      '    }\n}\n';
+    const placement = metadataOf(compile('development', source));
+    const watch = (placement.systems as { name: string; reads: string[]; writes: string[] }[]).find(
+      (s) => s.name === 'Watch',
+    );
+    expect(watch?.reads).toContain('Position');
+    /* And the inferred one is still there — a union, not a replacement. */
+    expect(watch?.reads).toContain('Alarm');
+    expect(watch?.writes).toEqual(['Alarm']);
   });
 
   it('carries the stride a rate compiled to, and the ordering constraint', () => {

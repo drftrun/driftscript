@@ -204,6 +204,18 @@ function emitExprText(expr: IrExpr): string {
       if (conversion !== null) return conversion;
 
       /*
+       * The two list built-ins, which are JavaScript's own operations under different names.
+       *
+       * Emitted here rather than as helpers because there is nothing to help with: `length` is a
+       * property and `push` is a method, and a wrapper around either would be a function call per
+       * element on a path a script walks every frame.
+       */
+      if (expr.callee === 'len') return `${emitExprText(expr.args[0])}.length`;
+      if (expr.callee === 'push') {
+        return `${emitExprText(expr.args[0])}.push(${emitExprText(expr.args[1])})`;
+      }
+
+      /*
        * `callee` may be dotted for an enum constructor — `Shape.Circle` — or for a capability call
        * — `audio.play`. Both emit the same way, and the host supplies the namespace object.
        *
@@ -216,6 +228,13 @@ function emitExprText(expr: IrExpr): string {
          returned the width it declared and re-rounding it would cost a call per frame for nothing. */
       return expr.rounds ? `Math.fround(${call})` : call;
     }
+    case 'listLiteral':
+      return `[${expr.items.map(emitExprText).join(', ')}]`;
+    case 'index':
+      /* `$at` rather than a bare `[i]`, because JavaScript answers `undefined` past the end and a
+         script has no null: that value flows into arithmetic as `NaN` and surfaces frames later
+         somewhere else. The same argument integer overflow gets, and the same shape of helper. */
+      return `$at(${emitExprText(expr.target)}, ${emitExprText(expr.at)})`;
     case 'record':
       return `{ ${expr.fields.map((f) => `${f.name}: ${emitExprText(f.value)}`).join(', ')} }`;
     case 'wrap':
@@ -414,6 +433,24 @@ function emitStmt(writer: Writer, stmt: IrStmt): void {
     case 'forQuery':
       emitQuery(writer, stmt);
       return;
+    case 'forList': {
+      /*
+       * An index walk rather than `for … of`, which would allocate an iterator per loop — the
+       * per-frame allocation this language refuses everywhere else. The subject and the length are
+       * read once into temporaries numbered by depth, so a list mutated inside its own walk does
+       * not change what the walk covers, and two sibling loops do not collide.
+       */
+      const subject = `$l${stmt.depth}`;
+      const index = `$n${stmt.depth}`;
+      writer.block('{', () => {
+        writer.line_(`const ${subject} = ${emitExprText(stmt.subject)};`);
+        writer.block(`for (let ${index} = 0; ${index} < ${subject}.length; ${index} += 1) {`, () => {
+          writer.line_(`const ${jsName(stmt.binding)} = ${subject}[${index}];`);
+          for (const inner of stmt.body) emitStmt(writer, inner);
+        });
+      });
+      return;
+    }
     case 'loopJump':
       writer.mark(stmt.span.start);
       /*
@@ -860,6 +897,22 @@ function usesTry(stmts: readonly IrStmt[]): boolean {
  * whole point of the `exports` split is that generated code depends on nothing.
  */
 const HELPERS: Readonly<Record<string, string>> = {
+  /*
+   * An index past the end throws, and that is the same decision integer overflow got.
+   *
+   * JavaScript answers `undefined`, which a script has no type for: it flows into arithmetic as
+   * `NaN` and surfaces frames later, somewhere with nothing to do with the read. Throwing names the
+   * length and the index at the line that asked. **This is init-time strictness on a runtime path**,
+   * which `AGENTS.md` normally refuses — the justification is the one overflow already has: a
+   * wrong number that keeps running is worse than a stop, and both are a *program* error rather
+   * than a missing host.
+   */
+  $at: `function $at(list, index) {
+  if (index < 0 || index >= list.length) {
+    throw new RangeError(\`index \${index} is outside a list of \${list.length}\`);
+  }
+  return list[index];
+}`,
   $chk: `function $chk(v, bits, signed) {
   const lo = signed ? -(2 ** (bits - 1)) : 0;
   const hi = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;

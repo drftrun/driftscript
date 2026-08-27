@@ -69,6 +69,25 @@ export type Type =
    * which is why `drift/ecs` should return this type once it can name it.
    */
   | { readonly kind: 'entity' }
+  /**
+   * `List<T>` — the language's one container, and the reason `assignable` has an invariance rule.
+   *
+   * **Added because everything with a variable number of elements had nowhere to live.** A consumer
+   * reported it precisely: the ECS is the collection when the elements are entities, and when they
+   * are not — lines already spoken, tables already set up, a queue at a counter — the logic moved
+   * into the host, which is the wrong place for a rule somebody wants to hot-reload. A
+   * twenty-two-line chain of `if` stood in for an array index.
+   *
+   * **Invariant, and that is not a preference.** The comment on `data` below says width subtyping
+   * is sound here partly because there are no containers, and names this as the clause a collection
+   * type would invalidate. It is right: with covariance, a `List<Wolf>` passed where a `List<Dog>`
+   * is wanted could have a plain `Dog` pushed into it, and the caller's next read would find a
+   * `Dog` in a list whose type says `Wolf`. So a list matches its element type exactly.
+   *
+   * The cost is that a helper over `List<Dog>` cannot be called with a `List<Wolf>`. There is no
+   * generic `fn`, so the alternative was never available anyway.
+   */
+  | { readonly kind: 'list'; readonly of: Type }
   | { readonly kind: 'option'; readonly inner: Type }
   | { readonly kind: 'result'; readonly ok: Type; readonly err: Type }
   | { readonly kind: 'void' }
@@ -109,6 +128,10 @@ export function primitiveType(name: string): Type {
 
 export function option(inner: Type): Type {
   return { kind: 'option', inner };
+}
+
+export function list(of: Type): Type {
+  return { kind: 'list', of };
 }
 
 export function result(ok: Type, err: Type): Type {
@@ -191,6 +214,8 @@ export function nameOf(type: Type): string {
       return type.name;
     case 'entity':
       return 'Entity';
+    case 'list':
+      return `List<${nameOf(type.of)}>`;
     case 'option':
       return `${nameOf(type.inner)}?`;
     case 'result':
@@ -229,19 +254,26 @@ export function assignable(from: Type, to: Type): boolean {
   switch (from.kind) {
     case 'primitive':
       return to.kind === 'primitive' && from.name === to.name;
+    /*
+     * **Invariant: same element type, exactly.** See the `list` kind for why covariance would make
+     * the record rule below unsound, and the `data` case for the sentence this answers.
+     */
+    case 'list':
+      return to.kind === 'list' && same(from.of, to.of);
     /**
      * A record is assignable to any record in its base chain, and to nothing else.
      *
      * **Width subtyping, and it is sound here for two reasons that are properties of this language
-     * rather than of subtyping.** There are no collection types — `Type` is primitive, data, enum,
-     * option, result, void and error — so there is no mutable container to be unsound through, and
-     * `mut [Dog]` accepting a `[Wolf]` cannot arise. And whole-record assignment to a `mut`
+     * rather than of subtyping.** There is exactly one container, `List<T>`, and **it is invariant**
+     * — so a `List<Dog>` accepts a `List<Dog>` and nothing else, and pushing a `Dog` through a
+     * reference whose real list holds `Wolf` cannot arise. And whole-record assignment to a `mut`
      * parameter compiles to a local rebinding the caller never sees, so replacing a `Wolf` through
      * a `mut Dog` parameter cannot erase its extra fields.
      *
-     * **The first of those is the clause a collection type would invalidate**, so whoever adds one
-     * reads this: arrays need an invariance rule written at the same time, or this becomes unsound
-     * the day they land.
+     * **The first clause used to read "there are no collection types", and the paragraph told
+     * whoever added one to write an invariance rule in the same commit or make this unsound.** That
+     * is what `List<T>` did; the rule is the `list` case below, and this sentence is kept so the
+     * next container arrives knowing the constraint rather than discovering it.
      *
      * The walk is up one chain, never to a common ancestor: two records sharing a base are siblings
      * and are not each other's subtypes. Nominal, not structural — two records with identical

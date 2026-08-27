@@ -375,6 +375,10 @@ function directAccess(
         return;
       case 'become':
         return;
+      case 'forList':
+        fromExpr(stmt.subject);
+        stmt.body.forEach(fromStmt);
+        return;
       case 'loopJump':
         /* No expression, so leaving a loop reads and writes no component. */
         return;

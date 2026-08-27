@@ -45,6 +45,7 @@ import {
   isFloat,
   isNumeric,
   nameOf,
+  list,
   option,
   primitive,
   primitiveType,
@@ -234,6 +235,20 @@ class Scope {
 
 /** The built-in constructors, which are functions in every way except that nobody declared them. */
 const BUILTIN_CONSTRUCTORS: ReadonlySet<string> = new Set(['Ok', 'Err', 'some', 'none']);
+
+/**
+ * The list operations, which are **language built-ins rather than a `std/collections` module**.
+ *
+ * A capability is described by data, and its parameter types are names — so a module function over
+ * `List<T>` would need a type variable in the registry, which is a published format a host writes.
+ * These are the only two operations a list needs that indexing does not give, and building them
+ * into the language costs a branch here and no surface at all for a host to get wrong.
+ *
+ * `std/collections` was listed in `STD_MODULES` and in the language reference for as long as
+ * neither existed, which is the advertisement a consumer reported. It is gone; this is what
+ * replaced it.
+ */
+const LIST_BUILTINS: ReadonlySet<string> = new Set(['len', 'push']);
 
 class Checker {
   private readonly types = new Map<Expr, Type>();
@@ -1469,6 +1484,29 @@ class Checker {
         return;
       }
 
+      case 'forList': {
+        const subject = this.checkExpr(stmt.subject, scope);
+        const body = scope.child();
+        if (subject.kind === 'list') {
+          /* Immutable, like a query loop's binding: the loop's own position is not a thing to
+             assign to, and rebinding it would not move the walk. */
+          body.declare(stmt.binding, { type: subject.of, mutable: false });
+        } else {
+          if (subject.kind !== 'error') {
+            this.report(
+              'DS0246',
+              `\`for … in\` walks a list but this is \`${nameOf(subject)}\``,
+              stmt.subject.span,
+            );
+          }
+          body.declare(stmt.binding, { type: ERROR, mutable: false });
+        }
+        this.loopDepth += 1;
+        for (const inner of stmt.body) this.checkStmt(inner, body);
+        this.loopDepth -= 1;
+        return;
+      }
+
       case 'loopJump': {
         if (this.loopDepth === 0) {
           /*
@@ -1879,6 +1917,71 @@ class Checker {
         }
         return this.record(expr, primitive('f32'));
 
+      case 'listLiteral': {
+        /*
+         * The element type comes from the first item, and every other item is checked against it.
+         *
+         * **An expectation is honoured before that**, which is what makes `let xs: List<f64> = []`
+         * and `[1, 2]` in an `f64` position work: a bare literal has no width until something gives
+         * it one, and an empty list has no element type at all. The same shape `none` has.
+         */
+        const wanted = expected?.kind === 'list' ? expected.of : undefined;
+        if (expr.items.length === 0) {
+          if (wanted !== undefined) return this.record(expr, list(wanted));
+          this.report(
+            'DS0244',
+            'an empty list needs a type from its context; annotate the binding it is assigned to',
+            expr.span,
+          );
+          return this.record(expr, ERROR);
+        }
+
+        const first = this.checkExpr(expr.items[0], scope, wanted);
+        const of = wanted ?? first;
+        if (!assignable(first, of)) {
+          this.report(
+            'DS0245',
+            `this list holds \`${nameOf(of)}\` but its first item is \`${nameOf(first)}\``,
+            expr.items[0].span,
+          );
+        }
+        for (let i = 1; i < expr.items.length; i += 1) {
+          const item = this.checkExpr(expr.items[i], scope, of);
+          if (!assignable(item, of)) {
+            this.report(
+              'DS0245',
+              `this list holds \`${nameOf(of)}\` but this item is \`${nameOf(item)}\``,
+              expr.items[i].span,
+            );
+          }
+        }
+        return this.record(expr, list(of));
+      }
+
+      case 'index': {
+        const target = this.checkExpr(expr.target, scope);
+        /* The index is a `u32`, which is what `len` answers — so `var i: u32 = 0` walks a list and
+           a bare literal takes the width from here without an annotation. */
+        const at = this.checkExpr(expr.at, scope, primitive('u32'));
+        if (target.kind === 'error') return this.record(expr, ERROR);
+        if (target.kind !== 'list') {
+          this.report(
+            'DS0246',
+            `\`[…]\` indexes a list but this is \`${nameOf(target)}\``,
+            expr.target.span,
+          );
+          return this.record(expr, ERROR);
+        }
+        if (at.kind !== 'error' && !assignable(at, primitive('u32'))) {
+          this.report(
+            'DS0247',
+            `a list index is a \`u32\` but this is \`${nameOf(at)}\``,
+            expr.at.span,
+          );
+        }
+        return this.record(expr, target.of);
+      }
+
       case 'string':
         return this.record(expr, STRING);
 
@@ -1901,7 +2004,11 @@ class Checker {
            and before the function check, so a constant is not reported as "call it". */
         const constant = this.lookupConst(expr.name);
         if (constant !== undefined) return this.record(expr, constant);
-        if (this.lookupFn(expr.name) !== undefined || BUILTIN_CONSTRUCTORS.has(expr.name)) {
+        if (
+          this.lookupFn(expr.name) !== undefined ||
+          BUILTIN_CONSTRUCTORS.has(expr.name) ||
+          LIST_BUILTINS.has(expr.name)
+        ) {
           this.report(
             'DS0264',
             `\`${expr.name}\` is a function; call it rather than using it as a value`,
@@ -2228,6 +2335,8 @@ class Checker {
     if (name === 'Ok' || name === 'Err' || name === 'some') {
       return this.checkBuiltinConstructor(name, expr, scope, expected);
     }
+
+    if (name === 'len' || name === 'push') return this.checkListBuiltin(name, expr, scope);
 
     const signature = this.lookupFn(name);
     if (signature === undefined) {
@@ -2561,6 +2670,60 @@ class Checker {
     return declared;
   }
 
+  /**
+   * `len(xs)` and `push(xs, v)`.
+   *
+   * **`push` needs a `mut` binding and `len` does not**, which is the same rule a record field
+   * follows: growing a list is writing to the container, and the container is what `mut` describes.
+   * Without it a `let` list would be immutable in its binding and mutable in its contents, which is
+   * the distinction `checkWritable` exists to keep.
+   */
+  private checkListBuiltin(
+    name: 'len' | 'push',
+    expr: Extract<Expr, { kind: 'call' }>,
+    scope: Scope,
+  ): Type {
+    const wanted = name === 'len' ? 1 : 2;
+    if (expr.args.length !== wanted) {
+      this.report(
+        'DS0262',
+        `\`${name}\` takes ${wanted} argument${wanted === 1 ? '' : 's'} but ${expr.args.length} ` +
+          `${expr.args.length === 1 ? 'was' : 'were'} given`,
+        expr.span,
+      );
+      for (const arg of expr.args) this.checkExpr(arg, scope);
+      return name === 'len' ? primitive('u32') : VOID;
+    }
+
+    const target = this.checkExpr(expr.args[0], scope);
+    if (target.kind === 'error') {
+      for (let i = 1; i < expr.args.length; i += 1) this.checkExpr(expr.args[i], scope);
+      return name === 'len' ? primitive('u32') : VOID;
+    }
+    if (target.kind !== 'list') {
+      this.report(
+        'DS0246',
+        `\`${name}\` takes a list but this is \`${nameOf(target)}\``,
+        expr.args[0].span,
+      );
+      for (let i = 1; i < expr.args.length; i += 1) this.checkExpr(expr.args[i], scope);
+      return name === 'len' ? primitive('u32') : VOID;
+    }
+
+    if (name === 'len') return primitive('u32');
+
+    this.checkWritable(expr.args[0], scope);
+    const value = this.checkExpr(expr.args[1], scope, target.of);
+    if (!assignable(value, target.of)) {
+      this.report(
+        'DS0245',
+        `this list holds \`${nameOf(target.of)}\` but this is \`${nameOf(value)}\``,
+        expr.args[1].span,
+      );
+    }
+    return VOID;
+  }
+
   private checkBuiltinConstructor(
     name: 'Ok' | 'Err' | 'some',
     expr: Extract<Expr, { kind: 'call' }>,
@@ -2834,6 +2997,14 @@ class Checker {
         return ERROR;
       }
       return result(this.resolveTypeRef(ref.args[0]), this.resolveTypeRef(ref.args[1]));
+    }
+
+    if (ref.name === 'List') {
+      if (ref.args.length !== 1) {
+        this.report('DS0243', '`List` takes one type argument: what it holds', ref.span);
+        return ERROR;
+      }
+      return list(this.resolveTypeRef(ref.args[0]));
     }
 
     const declared = this.lookupData(ref.name) ?? this.lookupEnum(ref.name);

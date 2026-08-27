@@ -642,9 +642,35 @@ describe('the query loop', () => {
     expect(diagnostics[0]?.message).toContain('exactly one');
   });
 
-  it('refuses `for` over anything that is not a query', () => {
-    const { diagnostics } = parse('fn f() {\n    for e in items {\n    }\n}\n', 'x.drs');
-    expect(diagnostics[0]?.code).toBe('DS0135');
+  it('reads `for … in` over anything but `query` as a walk over a list', () => {
+    /*
+     * This used to be `DS0135`: `for` existed only over a query, so any other subject was a syntax
+     * error. Lists landed in 1.6.0 and the two forms now share the keyword, told apart by the word
+     * after `in` — `query` is a hard keyword, so no expression can begin with it and the test
+     * cannot misread a list whose variable happens to be called that.
+     *
+     * Whether the subject *is* a list is the checker's question, not this one's.
+     */
+    const { module, diagnostics } = parse('fn f() {\n    for e in items {\n    }\n}\n', 'x.drs');
+    expect(diagnostics).toEqual([]);
+    const decl = module.decls[0];
+    if (decl?.kind !== 'fn') throw new Error('expected a function');
+    expect(decl.body[0]?.kind).toBe('forList');
+  });
+
+  it('suppresses a record literal in the subject, or the loop body would be one', () => {
+    /* `for x in xs {` puts a brace on the same line as an identifier, which is exactly the
+       record-literal shape — the same collision `if` and `while` already resolve this way. */
+    const { module, diagnostics } = parse(
+      'fn f() {\n    for e in items {\n        let n = 1\n    }\n}\n',
+      'x.drs',
+    );
+    expect(diagnostics).toEqual([]);
+    const decl = module.decls[0];
+    if (decl?.kind !== 'fn') throw new Error('expected a function');
+    const loop = decl.body[0];
+    if (loop?.kind !== 'forList') throw new Error('expected a list walk');
+    expect(loop.body).toHaveLength(1);
   });
 
   it('still reads `<` as a comparison outside a query', () => {
