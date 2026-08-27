@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 216.51 167.69" color="#ececf0">
+  <!--
+    The vertical lockup: the caret over the word.
+
+    **The caret is this language's own mark**, the same one the site's favicon and the editor
+    extension draw: the compiler pointing at the thing it will not accept. It is not the engine's
+    cube, and that difference is the reason this repository exists. Two 45 degree legs meeting at a
+    right angle, square caps, mitred join, no curve anywhere; the stroke is a quarter of the width,
+    which is the ratio script.driftengine.dev's favicon uses at 32 pixels.
+
+    **No tile behind it.** The marketplace listing carries one because a card draws the mark against
+    a gallery's own background, and a README is read on two surfaces. A filled dark block would be a
+    hole in one of them.
+
+    The word is outlines and not text, so this file renders identically on a machine with no fonts
+    installed and inside a shell with access to none. Drawn from Fira Sans (SIL Open Font License
+    1.1) at Light for "Drift" and SemiBold for "Script", at 46 with 0.3 of tracking per
+    glyph. The weight break carries the compound word without a space or a capital doing the work,
+    and the colour break puts the language's accent on the half that names it. Nothing here is a
+    font dependency: no font is embedded, distributed or required. These are curves.
+
+    **The construction is the sibling's, measured from its file and not guessed**, so the two
+    lockups are one family: same size, same tracking, same weight break, same currentColor half.
+    The engine's is at `packages/package/assets/lockup.svg` in its own repository. What differs is
+    the mark and the accent, which is what should differ.
+
+    The caret is centred on the word's width, and the 48.63 under it is the sibling's own gap
+    between its mark and the top of its lettering. "Drift" is `currentColor`, so the half that is
+    not the accent follows whatever surface this sits on; the root carries the dark default, which
+    is what a standalone view or an `img` element gets.
+  -->
+  <style>
+    /* The half that is not the accent follows its surface. A file referenced as an image gets these
+       defaults; an inline copy can be overridden by setting `color` on any ancestor. No angle
+       brackets in here: this is XML, and a tag name inside a CSS comment is a tag. */
+    :root { color: #ececf0; }
+    @media (prefers-color-scheme: light) { :root { color: #14141a; } }
+  </style>
+  <path d="M60.26 12.00 L108.26 60.00 L156.25 12.00" fill="none" stroke="#f0a437" stroke-width="24.00" stroke-linecap="square" stroke-linejoin="miter" />
+  <path transform="translate(0.00,157.57) scale(0.04600,-0.04600)" d="M247 685H111V0H258C399 0 566 64 566 348C566 630 406 685 247 685ZM255 635C375 635 503 599 503 348C503 102 380 50 262 50H171V635Z" fill="currentColor" />
+  <path transform="translate(29.37,157.57) scale(0.04600,-0.04600)" d="M309 534C236 534 189 492 161 406L156 523H106V0H164V320C192 427 231 479 304 479C322 479 335 477 350 473L361 528C347 532 329 534 309 534Z" fill="currentColor" />
+  <path transform="translate(46.83,157.57) scale(0.04600,-0.04600)" d="M134 753C108 753 91 734 91 711C91 688 108 669 134 669C161 669 178 688 178 711C178 734 161 753 134 753ZM164 523H106V0H164Z" fill="currentColor" />
+  <path transform="translate(59.55,157.57) scale(0.04600,-0.04600)" d="M260 695C293 695 325 687 359 672L379 715C340 733 302 743 257 743C166 743 112 691 112 609V523H21V476H112V0H170V476H300L308 523H170V607C170 669 201 695 260 695Z" fill="currentColor" />
+  <path transform="translate(74.62,157.57) scale(0.04600,-0.04600)" d="M321 62C295 47 270 39 241 39C188 39 164 69 164 130V476H292L299 523H164V655L106 648V523H18V476H106V127C106 36 155 -11 234 -11C276 -11 312 1 344 22Z" fill="currentColor" />
+  <path transform="translate(90.60,157.57) scale(0.04600,-0.04600)" d="M284 708C144 708 42 631 42 513C42 408 102 348 252 301C357 269 384 245 384 190C384 129 336 95 265 95C194 95 139 121 88 164L13 81C70 25 154 -16 269 -16C437 -16 537 73 537 200C537 328 457 380 332 420C219 455 193 475 193 523C193 572 234 598 294 598C350 598 398 580 447 540L517 621C457 677 387 708 284 708Z" fill="#f0a437" />
+  <path transform="translate(116.89,157.57) scale(0.04600,-0.04600)" d="M291 546C136 546 38 429 38 261C38 92 135 -16 293 -16C363 -16 419 7 467 46L405 135C366 110 339 98 300 98C233 98 188 139 188 262C188 385 230 436 301 436C340 436 371 424 405 398L467 482C417 525 362 546 291 546Z" fill="#f0a437" />
+  <path transform="translate(139.18,157.57) scale(0.04600,-0.04600)" d="M344 545C282 545 231 501 206 427L193 530H70V0H212V274C231 359 261 407 326 407C344 407 357 404 373 400L397 537C379 542 363 545 344 545Z" fill="#f0a437" />
+  <path transform="translate(157.74,157.57) scale(0.04600,-0.04600)" d="M140 803C89 803 54 767 54 720C54 673 89 637 140 637C191 637 227 673 227 720C227 767 191 803 140 803ZM212 530H70V0H212Z" fill="#f0a437" />
+  <path transform="translate(171.01,157.57) scale(0.04600,-0.04600)" d="M356 546C301 546 244 522 202 468L195 530H70V-220L212 -204V41C245 3 290 -16 343 -16C476 -16 553 104 553 266C553 437 494 546 356 546ZM301 90C264 90 235 107 212 142V373C236 413 271 441 312 441C371 441 405 398 405 265C405 141 366 90 301 90Z" fill="#f0a437" />
+  <path transform="translate(198.73,157.57) scale(0.04600,-0.04600)" d="M338 115C316 103 297 97 278 97C242 97 225 117 225 169V430H333L347 530H225V663L83 646V530H4V430H83V166C83 48 139 -15 249 -16C296 -16 348 -2 387 25Z" fill="#f0a437" />
+</svg>

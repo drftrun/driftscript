@@ -57,11 +57,27 @@ function prose(file) {
   return readFileSync(file, 'utf8').replace(/```[\s\S]*?```/g, '');
 }
 
-test('every relative link resolves to something that exists', () => {
+/**
+ * Every reference a document makes to a file, whether it is a link or an image.
+ *
+ * **The `src` half was added when the README stopped opening on a heading.** A lockup referenced
+ * with an HTML `img` is a relative path like any other, and it is the one reference on the page a
+ * reader meets before reading a word, so a rename that missed it would show a broken image at the
+ * top of a public repository. The Markdown pattern could never have seen it: an `img` tag has no
+ * brackets in it.
+ */
+function references(file) {
+  const text = prose(file);
+  const targets = [...text.matchAll(/\[([^\]]+)\]\(([^)\s]+)\)/g)].map(([, , target]) => target);
+  for (const [, target] of text.matchAll(/\bsrc="([^"]+)"/g)) targets.push(target);
+  return targets;
+}
+
+test('every relative link and image resolves to something that exists', () => {
   const broken = [];
   for (const file of documents()) {
-    for (const [, , target] of prose(file).matchAll(/\[([^\]]+)\]\(([^)\s]+)\)/g)) {
-      if (/^(https?:|mailto:|#)/.test(target)) continue;
+    for (const target of references(file)) {
+      if (/^(https?:|mailto:|data:|#)/.test(target)) continue;
       const resolved = path.resolve(path.dirname(file), target.split('#')[0]);
       if (!existsSync(resolved) && !BUILD_WRITES.has(resolved)) {
         broken.push(`${path.relative(ROOT, file)} -> ${target}`);

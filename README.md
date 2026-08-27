@@ -1,4 +1,6 @@
-# DriftScript
+<p align="center">
+  <img src="assets/lockup.svg" alt="DriftScript" width="150">
+</p>
 
 **A scripting language for 3D engines that ships without one.**
 
