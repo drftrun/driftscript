@@ -305,6 +305,26 @@ wrote it rather than a zero at runtime.
 **It needs a world in scope**, because that is what the read runs against. A `system` has one; a
 function takes a `World` parameter.
 
+A function can say which component it works on, and take a row of it:
+
+```drs
+fn advance(m: mut Placement, dx: f64) {
+    m.x = m.x + dx
+}
+
+for e in query<Placement>() {
+    advance(e.Placement, 1)
+}
+```
+
+The argument is always `entity.Component`, because that is where the handle comes from. `mut` means
+the helper may write, and the component it names is what the caller's system is checked to have
+declared — the signature is where a reader and the inference both learn it.
+
+**A component is not a value.** Its fields are columns in a world, so there is no object to bind a
+name to: `let m = e.Placement` and returning one are both errors. Read a field from it, or pass it to a
+function that takes a row.
+
 A name belongs to the block it was declared in. A function that declares a return type must return
 on every path — a trailing `if` without an `else` is an error, because the path where the condition
 is false reaches the end.

@@ -793,3 +793,76 @@ describe('a component reached through a handle', () => {
   });
 });
 
+describe('a component row as a parameter', () => {
+  const META = 'component Placement {\n    x: f64 = 0\n}\n\n';
+
+  it('lets a helper say which component it touches, and reaches it', async () => {
+    /*
+     * `fn advance(m: mut Placement, dx: f64)` — the signature names the component, so a reader and the
+     * access inference learn it from the same line rather than from the body.
+     *
+     * A row is not a value: its fields are columns in a world. So the parameter compiles to a world
+     * and a handle, and `m.x` inside is the `ecs.read` a handle access already was.
+     */
+    const result = compile(
+      `${META}fn advance(m: mut Placement, dx: f64) {\n    m.x = m.x + dx\n}\n\n` +
+        'fn go(world: World, e: Entity) -> f64 {\n' +
+        '    advance(e.Placement, 5)\n    advance(e.Placement, 2)\n    return e.Placement.x\n}\n',
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(result.code).toContain('export function advance(m$world, m, dx)');
+    expect(result.code).toContain('advance(world, e, 5)');
+
+    const mod = (await import(
+      /* @vite-ignore */ `data:text/javascript;base64,${btoa(result.code)}`
+    )) as Record<string, (...args: never[]) => unknown> & {
+      __bind: (host: Record<string, unknown>) => void;
+    };
+    const store = new Map<string, number>();
+    mod.__bind({
+      'drift/ecs': {
+        read: (_w: unknown, e: number, c: string, f: string) => store.get(`${e}.${c}.${f}`) ?? 0,
+        write: (_w: unknown, e: number, c: string, f: string, v: number) => {
+          store.set(`${e}.${c}.${f}`, v);
+        },
+      },
+    });
+    expect(mod.go({} as never, 7 as never)).toBe(7);
+  });
+
+  it('needs `mut` to write through, like any other binding', () => {
+    expect(codesOf(`${META}fn f(m: Placement) {\n    m.x = 1\n}\n`)).toContain('DS0201');
+  });
+
+  it('takes a row of the component it named, and nothing else', () => {
+    const other = 'component Other {\n    y: f64 = 0\n}\n\n';
+    const helper = 'fn f(m: mut Placement) {\n    m.x = 1\n}\n\n';
+    expect(
+      codesOf(
+        `${META}${other}${helper}fn g(world: World, e: Entity) {\n    f(e.Other)\n}\n`,
+      ),
+    ).toContain('DS0249');
+    /* Not a row at all — the argument is always `entity.Component`, because that is where the
+       handle comes from. */
+    expect(codesOf(`${META}${helper}fn g(n: f64) {\n    f(n)\n}\n`)).toContain('DS0249');
+  });
+
+  it('checks the field name, which is the help the string calls could not give', () => {
+    expect(codesOf(`${META}fn f(m: mut Placement) {\n    m.zz = 1\n}\n`)).toContain('DS0203');
+  });
+
+  it('is not a value, so it cannot be held or returned', () => {
+    /*
+     * `entities.ts` had asserted this in a comment since the entity model shipped — "a component is
+     * not a value a script can hold" — and nothing enforced it: `let m = w.Placement` compiled to a
+     * property read of a number, exactly as `w.Placement.x` did.
+     */
+    expect(
+      codesOf(`${META}fn f(world: World, w: Entity) -> f64 {\n    let m = w.Placement\n    return m.x\n}\n`),
+    ).toContain('DS0248');
+    expect(
+      codesOf(`${META}fn f(world: World, e: Entity) -> f64 {\n    return e.Placement\n}\n`),
+    ).toContain('DS0248');
+  });
+});
+

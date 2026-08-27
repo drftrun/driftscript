@@ -120,6 +120,17 @@ const VOID_IR: IrType = { kind: 'void' };
 const STRING_IR: IrType = { kind: 'string' };
 
 /**
+ * The parameter a component row's world arrives in.
+ *
+ * Derived from the row's own name rather than being one shared name, so two component parameters
+ * do not collide — and suffixed with a character no identifier can carry, so it cannot shadow
+ * anything an author wrote.
+ */
+function worldOfRow(param: string): string {
+  return `${param}$world`;
+}
+
+/**
  * A module's constants, sorted so that each is written after everything it names.
  *
  * **JavaScript needs this and the language promises the opposite.** `LANGUAGE.md` says declaration
@@ -300,10 +311,12 @@ class Lowering {
          *
          * Falling through to `field` below is what this repairs: `who.Placement.x` outside a query loop
          * emitted `who.Placement.x`, a property read of a number, which type-checked and threw. See
-         * `CheckResult.handleComponents`.
+         * `CheckResult.componentWorlds`.
          */
         const byHandle = this.handleRead(node);
         if (byHandle !== null) return byHandle;
+        const byRow = this.rowRead(node);
+        if (byRow !== null) return byRow;
         return {
           kind: 'field',
           target: this.expr(node.target),
@@ -366,10 +379,32 @@ class Lowering {
         if (name === 'Ok' || name === 'Err' || name === 'some') {
           return { kind: 'wrap', tag: name, value: this.expr(node.args[0]), type, span: node.span };
         }
+        /*
+         * An argument in a component-parameter position becomes two, matching the callee's own
+         * expansion: the world the row is read from, and the handle it belongs to. The argument is
+         * always `<entity>.<Component>` — the checker refused anything else — so both are in hand.
+         */
+        const signature = this.checked.functions.get(name);
+        const args: IrExpr[] = [];
+        node.args.forEach((argument, index) => {
+          const parameter = signature?.params[index];
+          if (parameter?.component !== undefined && argument.kind === 'member') {
+            const world = this.checked.componentWorlds.get(argument);
+            args.push({
+              kind: 'local',
+              name: world ?? 'world',
+              type: { kind: 'data', name: 'World' },
+              span: argument.span,
+            });
+            args.push(this.expr(argument.target));
+            return;
+          }
+          args.push(this.expr(argument));
+        });
         return {
           kind: 'call',
           callee: name,
-          args: node.args.map((a) => this.expr(a)),
+          args,
           rounds: this.checked.rounded.has(node),
           type,
           span: node.span,
@@ -432,7 +467,7 @@ class Lowering {
    */
   private handleRead(node: Extract<Expr, { kind: 'member' }>): IrExpr | null {
     if (node.target.kind !== 'member') return null;
-    const world = this.checked.handleComponents.get(node.target);
+    const world = this.checked.componentWorlds.get(node.target);
     if (world === undefined) return null;
     const type = this.typeOf(node);
     return {
@@ -458,8 +493,39 @@ class Lowering {
    * `who.Placement.x = v`, an assignment to a property of a number, which throws.
    */
   private handleWrite(target: Expr, value: Expr): IrStmt | null {
-    if (target.kind !== 'member' || target.target.kind !== 'member') return null;
-    const world = this.checked.handleComponents.get(target.target);
+    if (target.kind !== 'member') return null;
+    const row = this.checked.rowFields.get(target);
+    if (row !== undefined) {
+      return {
+        kind: 'expr',
+        expr: {
+          kind: 'call',
+          callee: `${ECS_ALIAS}.write`,
+          args: [
+            { kind: 'local', name: worldOfRow(row.param), type: { kind: 'data', name: 'World' }, span: target.span },
+            { kind: 'local', name: row.param, type: { kind: 'entity' }, span: target.span },
+            { kind: 'const', value: row.component, type: STRING_IR, span: target.span },
+            { kind: 'const', value: target.name, type: STRING_IR, span: target.span },
+            this.expr(value),
+          ],
+          rounds: false,
+          type: VOID_IR,
+          span: target.span,
+        },
+        span: target.span,
+      };
+    }
+    if (target.target.kind !== 'member') return null;
+    /*
+     * **A loop view wins, and this test is what keeps it.** `componentWorlds` records every
+     * component access, including the ones a query loop resolves, because a row handed to a
+     * function needs its world at the call site too. Without this line a write inside a query loop
+     * took the `ecs.write` path instead of `$v.field[$i] = …` — a host call per field per entity
+     * per frame, which is the whole cost the view exists to remove. Caught by the query emit tests
+     * within a minute; it would have been invisible in a diagnostic.
+     */
+    if (this.componentAccess(target.target) !== null) return null;
+    const world = this.checked.componentWorlds.get(target.target);
     if (world === undefined) return null;
     return {
       kind: 'expr',
@@ -478,6 +544,25 @@ class Lowering {
         span: target.span,
       },
       span: target.span,
+    };
+  }
+
+  /** `<row>.<field>` on a component parameter, as an `ecs.read` against the row's own world. */
+  private rowRead(node: Extract<Expr, { kind: 'member' }>): IrExpr | null {
+    const row = this.checked.rowFields.get(node);
+    if (row === undefined) return null;
+    return {
+      kind: 'call',
+      callee: `${ECS_ALIAS}.read`,
+      args: [
+        { kind: 'local', name: worldOfRow(row.param), type: { kind: 'data', name: 'World' }, span: node.span },
+        { kind: 'local', name: row.param, type: { kind: 'entity' }, span: node.span },
+        { kind: 'const', value: row.component, type: STRING_IR, span: node.span },
+        { kind: 'const', value: node.name, type: STRING_IR, span: node.span },
+      ],
+      rounds: false,
+      type: this.typeOf(node),
+      span: node.span,
     };
   }
 
@@ -907,14 +992,42 @@ class Lowering {
   }
 
   fn(decl: FnDecl): IrFn {
+    /*
+     * **A component parameter is two parameters by the time a backend sees it.**
+     *
+     * A row is not a value — its fields are columns in a world — so what a caller actually lends is
+     * the world and the handle, and `m.x` inside the body is the same `ecs.read` a handle access
+     * compiles to. Expanded here rather than given a parameter kind of its own, because every
+     * backend would otherwise have to know what a row is; expanded this way, none of them does.
+     *
+     * The world takes the parameter's own name with a suffix, so two component parameters cannot
+     * collide and neither can shadow a name the author wrote.
+     */
+    const params: { name: string; type: IrType }[] = [];
+    for (const p of decl.params) {
+      const component = this.componentParamOf(decl, p.name);
+      if (component !== null) {
+        params.push({ name: worldOfRow(p.name), type: { kind: 'data', name: 'World' } });
+        params.push({ name: p.name, type: { kind: 'entity' } });
+        continue;
+      }
+      params.push({ name: p.name, type: this.resolveRef(p.type) });
+    }
     return {
       name: decl.name,
       annotations: decl.annotations,
-      params: decl.params.map((p) => ({ name: p.name, type: this.resolveRef(p.type) })),
+      params,
       returns: decl.returnType === undefined ? VOID_IR : this.resolveRef(decl.returnType),
       body: decl.body.map((s) => this.stmt(s)),
       span: decl.span,
     };
+  }
+
+  /** The component a function's parameter is a row of, from the checked signature. */
+  private componentParamOf(decl: FnDecl, name: string): string | null {
+    const signature = this.checked.functions.get(decl.name);
+    const param = signature?.params.find((p) => p.name === name);
+    return param?.component ?? null;
   }
 }
 
@@ -1006,7 +1119,7 @@ export function lower(
   /* A handle-based component access is a use of `drift/ecs` for exactly the reason a query loop is:
      it compiles to `ecs.read` and `ecs.write`, so the module has the requirement and needs the
      namespace bound whether or not the file imports anything from it. */
-  if (checked.queries.size > 0 || checked.handleComponents.size > 0) {
+  if (checked.queries.size > 0 || checked.componentWorlds.size > 0) {
     if (!requires.includes(ECS_MODULE)) requires.push(ECS_MODULE);
     if (!namespaces.some((n) => n.module === ECS_MODULE)) {
       namespaces.push({ alias: ECS_ALIAS, module: ECS_MODULE });

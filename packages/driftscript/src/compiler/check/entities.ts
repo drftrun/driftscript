@@ -271,23 +271,49 @@ function componentNamed(expr: Expr, model: EntityModel): string | null {
  * in from the target. `e.Hunger = …` never type-checks — a component is not a value a script can
  * hold — so the one-level walk is the whole of it.
  */
-function writtenComponent(target: Expr, model: EntityModel): string | null {
+function writtenComponent(
+  target: Expr,
+  model: EntityModel,
+  rows: ReadonlyMap<string, string> = new Map(),
+): string | null {
   if (target.kind !== 'member' && target.kind !== 'optionalMember') return null;
+  /* `m.x = 1` on a component parameter is one member deep, where `e.Hunger.value = 1` is two. */
+  if (target.target.kind === 'ident') {
+    const row = rows.get(target.target.name);
+    if (row !== undefined) return row;
+  }
   return componentNamed(target.target, model);
 }
 
-/** Everything a body touches directly, and every function it calls by name. */
+/**
+ * Everything a body touches directly, and every function it calls by name.
+ *
+ * `rows` names the body's component parameters. A helper written `fn advance(m: mut Placement, …)` touches
+ * `Placement` through `m.x`, which is **one** member deep where every other component access is two — so
+ * without this the access is invisible, the caller's view comes back read-only, and a declaration
+ * that named the component reads as over-wide.
+ */
 function directAccess(
   body: readonly Stmt[],
   model: EntityModel,
+  rows: ReadonlyMap<string, string> = new Map(),
 ): { reads: Set<string>; writes: Set<string>; calls: Set<string> } {
   const reads = new Set<string>();
   const writes = new Set<string>();
   const calls = new Set<string>();
 
+  /** The component `m.x` reads, when `m` is a component parameter. */
+  const rowRead = (expr: Expr): string | null => {
+    if (expr.kind !== 'member' && expr.kind !== 'optionalMember') return null;
+    if (expr.target.kind !== 'ident') return null;
+    return rows.get(expr.target.name) ?? null;
+  };
+
   const fromExpr = (expr: Expr): void => {
     const named = componentNamed(expr, model);
     if (named !== null) reads.add(named);
+    const row = rowRead(expr);
+    if (row !== null) reads.add(row);
     switch (expr.kind) {
       case 'call':
         if (expr.callee.kind === 'ident') calls.add(expr.callee.name);
@@ -326,7 +352,7 @@ function directAccess(
         return;
       case 'assign':
       case 'compoundAssign': {
-        const written = writtenComponent(stmt.target, model);
+        const written = writtenComponent(stmt.target, model, rows);
         if (written !== null) writes.add(written);
         /*
          * **A plain assignment's target is written, not read, and the implication supplies the
@@ -421,7 +447,17 @@ export function inferAccess(
   const calls = new Map<string, ReadonlySet<string>>();
 
   for (const decl of [...fns, ...systems]) {
-    const found = directAccess(decl.body, model);
+    /* A system takes no parameters, so its row map is always empty; a function's comes from the
+       parameters whose written type names a component. */
+    const rows = new Map<string, string>();
+    if (decl.kind === 'fn') {
+      for (const param of decl.params) {
+        if (param.type.kind === 'named' && param.type.args.length === 0 && model.components.has(param.type.name)) {
+          rows.set(param.name, param.type.name);
+        }
+      }
+    }
+    const found = directAccess(decl.body, model, rows);
     reads.set(decl.name, found.reads);
     writes.set(decl.name, found.writes);
     calls.set(decl.name, found.calls);

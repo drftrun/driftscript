@@ -310,3 +310,20 @@ fn feed(world: World) {
   });
 });
 
+describe('a component write inside a query loop', () => {
+  it('goes through the view, not through `ecs.write`', () => {
+    /*
+     * **A regression guard, and it caught one within a minute of being needed.**
+     *
+     * Component access outside a query loop lowers to `ecs.read`/`ecs.write`, and the checker
+     * records the world for *every* access — including loop-bound ones, because a row handed to a
+     * function needs its world at the call site. The write path then took the `ecs` route for a
+     * loop-bound target too: a host call per field per entity per frame, which is the entire cost
+     * the view exists to remove, and nothing about the program's behaviour would have looked wrong.
+     */
+    const code = emit(LOOP);
+    expect(code).toMatch(/\$v0_0\.value\[\$i0_0\] = 1/);
+    expect(code).not.toContain('ecs.write(');
+  });
+});
+

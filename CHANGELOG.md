@@ -37,6 +37,14 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
   broken code, and nothing had executed one. It lowers to `ecs.read` and `ecs.write` instead, which
   is what a consumer was writing by hand with the component and field as strings — the same calls,
   with both names checked.
+- **A function can take a row of a component.** `fn advance(m: mut Placement, dx: f64)`, called as
+  `advance(e.Placement, 1)` — the signature says which component the helper touches, `mut` says whether it
+  writes, and the caller's system is checked to have declared it. A row lowers to a world and a
+  handle, so the body's `m.x` is the same `ecs.read` a handle access is.
+- **A component row is not a value, and now it is refused as one.** `entities.ts` had asserted that
+  in a comment since the entity model shipped and nothing enforced it, so `let m = e.Placement` compiled
+  to a property read of a number. Holding one or returning one is an error naming the two things a
+  row can do.
 - **A capability may return `Entity`.** The registry path resolved the name to a primitive where a
   written annotation resolved it to the handle kind, so a host that returned a handle got a type on
   which `.Component` was refused with "`Entity` has no fields". The two resolvers disagreed about

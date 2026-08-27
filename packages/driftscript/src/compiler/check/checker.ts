@@ -28,6 +28,7 @@ import type {
   SystemDecl,
   PrefabDecl,
   ConstDecl,
+  ParamDecl,
 } from '../ast.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
 import { FLOAT, type CapabilityRegistry } from '../../registry/capability.ts';
@@ -64,7 +65,18 @@ import {
 } from './entities.ts';
 
 export interface FnSignature {
-  readonly params: readonly { readonly name: string; readonly type: Type }[];
+  readonly params: readonly {
+    readonly name: string;
+    readonly type: Type;
+    /**
+     * The component this parameter is a row of, when it was written as one.
+     *
+     * `fn advance(m: mut Placement, dx: f32)` — the helper says in its signature which component it
+     * touches, so a reader and the access inference learn it from the same line. Absent for an
+     * ordinary parameter.
+     */
+    readonly component?: string;
+  }[];
   readonly returns: Type;
 }
 
@@ -100,21 +112,34 @@ export interface CheckResult {
   /** Every module constant this file declares, by name. Lowering emits one `const` for each. */
   readonly constants: ReadonlyMap<string, Type>;
   /**
-   * Component accesses on a handle no query loop bound, and the world each runs against.
+   * Every `<entity>.<Component>` access, and the world it runs against.
    *
-   * **These used to compile to a property read of a number.** `who.Placement.x` inside a query loop is a
-   * view and an index; outside one, `componentAccess` found no loop and lowering fell through to an
-   * ordinary field access — so a form the checker accepted emitted JavaScript that threw
-   * `Cannot read properties of undefined`. It type-checked, it linked, and it was wrong.
+   * **Recorded because a component access outside a query loop used to compile to a property read
+   * of a number.** Inside a loop it is a view and an index; outside one, `componentAccess` found no
+   * loop and lowering fell through to an ordinary field access — so a form the checker accepted
+   * emitted JavaScript that threw. It type-checked, it linked, and it was wrong.
    *
-   * They lower to `ecs.read` and `ecs.write` instead, which is what a consumer was writing by hand
+   * Those lower to `ecs.read` and `ecs.write` instead, which is what a consumer was writing by hand
    * with the component and field as strings — the same calls, with the names checked.
+   *
+   * **Every access rather than only those**, because a component row passed to a function needs its
+   * world at the call site too, and inside a query loop that access has a view and still has to
+   * hand a world across. Lowering consults a loop first, so a loop-bound access never reaches the
+   * `ecs` path.
    *
    * The world is recorded per access rather than looked up while lowering, because only the checker
    * knows what was in scope where; a lowering that guessed `world` would be right inside a system
    * and wrong in a function that named its parameter something else.
    */
-  readonly handleComponents: ReadonlyMap<Expr, string>;
+  readonly componentWorlds: ReadonlyMap<Expr, string>;
+  /**
+   * Field accesses on a component parameter, and which component the parameter is a row of.
+   *
+   * A component parameter lowers to a world and a handle, so `m.x` inside the helper is the same
+   * `ecs.read` a handle access is — this map is what tells lowering which member accesses those
+   * are, since by then `m` is just a name.
+   */
+  readonly rowFields: ReadonlyMap<Expr, { readonly param: string; readonly component: string }>;
   /**
    * Each query loop's resolved plan, keyed by its statement.
    *
@@ -326,8 +351,19 @@ class Checker {
   /** This file's module constants, by name, once their values have been typed. */
   private readonly constants = new Map<string, Type>();
 
-  /** See `CheckResult.handleComponents`. Keyed by the `<handle>.<Component>` member. */
-  private readonly handleComponents = new Map<Expr, string>();
+  /** See `CheckResult.componentWorlds`. Keyed by the `<entity>.<Component>` member. */
+  private readonly componentWorlds = new Map<Expr, string>();
+
+  /**
+   * `<row>.<field>` where `row` is a component parameter, and which component it is a row of.
+   *
+   * Recorded for the same reason `handleComponents` is: only the checker knows what a name was
+   * bound to, and lowering has to turn the access into an `ecs.read` rather than a property.
+   */
+  private readonly rowFields = new Map<Expr, { param: string; component: string }>();
+
+  /** The component parameters of the body being checked, by binding name. */
+  private componentParams = new Map<string, string>();
 
   /**
    * The world a query loop in this body would run against, or null when there is none.
@@ -401,6 +437,36 @@ class Checker {
 
   private lookupFn(name: string): FnSignature | undefined {
     return this.functions.get(name) ?? this.imported?.functions.get(name);
+  }
+
+  /**
+   * The component this expression is a row of, when it is one.
+   *
+   * **A component is not a value a script can hold**, which `entities.ts` has asserted in a comment
+   * since the entity model shipped and nothing enforced. `let m = w.Placement` compiled to a property
+   * read of a number, exactly as `w.Placement.x` did before 1.6.0 — accepted, linked, and broken. Its
+   * fields live in the world's columns, so there is no object to bind a name to.
+   *
+   * Compared by identity against the model's own type, because that object is what `componentOf`
+   * hands back and a record can never be it.
+   */
+  private componentRowOf(expr: Expr): string | null {
+    const type = this.types.get(expr);
+    if (type === undefined || type.kind !== 'data') return null;
+    const component = this.entityModel.components.get(type.name);
+    return component !== undefined && component.type === type ? component.name : null;
+  }
+
+  /** Refuse a component row where a value is wanted, naming what to do instead. */
+  private refuseComponentRow(expr: Expr, where: string): void {
+    const component = this.componentRowOf(expr);
+    if (component === null) return;
+    this.report(
+      'DS0248',
+      `\`${component}\` is a component rather than a value, so it cannot be ${where}. Read a ` +
+        'field from it, or pass it to a function that takes a row of one.',
+      expr.span,
+    );
   }
 
   /** A module constant, this file's or an imported one's. Merged the way `lookupFn` merges. */
@@ -670,7 +736,8 @@ class Checker {
       enums: this.enums,
       functions: this.functions,
       constants: this.constants,
-      handleComponents: this.handleComponents,
+      componentWorlds: this.componentWorlds,
+      rowFields: this.rowFields,
       queries: this.queries,
       access: this.access,
       rounded: this.rounded,
@@ -901,9 +968,28 @@ class Checker {
       return;
     }
     this.functions.set(decl.name, {
-      params: decl.params.map((p) => ({ name: p.name, type: this.resolveTypeRef(p.type) })),
+      params: decl.params.map((p) => this.resolveParam(p)),
       returns: decl.returnType === undefined ? VOID : this.resolveTypeRef(decl.returnType),
     });
+  }
+
+  /**
+   * A parameter's type, which is the one place a component name is a type.
+   *
+   * **Only here, and that is the whole design.** A component is not a value a script can hold — its
+   * fields live in the world's columns rather than in a record — so `let m: Placement = …` has nothing to
+   * mean, and `resolveTypeRef` goes on refusing the name everywhere else. What a parameter names is
+   * not a value either: it is *which entity's row* the caller is lending, which is why the call site
+   * has to be a component access and why this lowers to a world and a handle.
+   */
+  private resolveParam(param: ParamDecl): { name: string; type: Type; component?: string } {
+    if (param.type.kind === 'named' && param.type.args.length === 0) {
+      const component = this.entityModel.components.get(param.type.name);
+      if (component !== undefined) {
+        return { name: param.name, type: component.type, component: component.name };
+      }
+    }
+    return { name: param.name, type: this.resolveTypeRef(param.type) };
   }
 
   /**
@@ -1312,18 +1398,24 @@ class Checker {
      * avoid — and it is the subtle kind, because both reports are correct and only their number is
      * wrong. Caught by the test that asserts one unknown type yields one diagnostic.
      */
+    const rows = new Map<string, string>();
     decl.params.forEach((param, index) => {
+      const collected = signature?.params[index];
       scope.declare(param.name, {
-        type: signature?.params[index]?.type ?? ERROR,
+        type: collected?.type ?? ERROR,
         mutable: param.mutable,
       });
+      if (collected?.component !== undefined) rows.set(param.name, collected.component);
     });
 
     const previous = this.returns;
     const previousWorld = this.worldInScope;
+    const previousRows = this.componentParams;
+    this.componentParams = rows;
     this.returns = signature?.returns ?? VOID;
     this.worldInScope = this.worldParamOf(decl.params);
     for (const stmt of decl.body) this.checkStmt(stmt, scope);
+    this.componentParams = previousRows;
     this.worldInScope = previousWorld;
 
     /*
@@ -1364,6 +1456,7 @@ class Checker {
       case 'let': {
         const declared = stmt.type === undefined ? undefined : this.resolveTypeRef(stmt.type);
         const actual = this.checkExpr(stmt.value, scope, declared);
+        this.refuseComponentRow(stmt.value, 'bound to a name');
         if (declared !== undefined && !assignable(actual, declared)) {
           this.report(
             'DS0208',
@@ -1451,6 +1544,8 @@ class Checker {
           return;
         }
         const actual = this.checkExpr(stmt.value, scope, this.returns);
+        /* After the value is checked, because the row test reads the type this just recorded. */
+        this.refuseComponentRow(stmt.value, 'returned');
         if (!assignable(actual, this.returns)) {
           this.report(
             'DS0254',
@@ -2041,6 +2136,20 @@ class Checker {
       }
 
       case 'member': {
+        /* `m.x` where `m` is a component parameter: a field of a row the caller lent, which lowers
+           to the same `ecs.read` a handle access does. Tested before the enum path because a
+           parameter name is a binding and an enum name is not. */
+        if (expr.target.kind === 'ident') {
+          const component = this.componentParams.get(expr.target.name);
+          if (component !== undefined && scope.lookup(expr.target.name) !== undefined) {
+            const row = this.entityModel.components.get(component);
+            const field = this.fieldOf(row?.type ?? ERROR, expr.name, expr.span);
+            if (field.kind !== 'error') {
+              this.rowFields.set(expr, { param: expr.target.name, component });
+            }
+            return this.record(expr, field);
+          }
+        }
         /*
          * `Light.Red` names a variant, and it is resolved before the target is checked as a value.
          *
@@ -2065,8 +2174,13 @@ class Checker {
            * `queryRequirements` holding the binding is exactly what says a loop bound it: that map
            * is written when a loop opens and taken back when it closes.
            */
-          if (component.kind !== 'error' && (binding === null || !this.queryRequirements.has(binding))) {
-            if (this.worldInScope === null) {
+          if (component.kind !== 'error') {
+            const bound = binding !== null && this.queryRequirements.has(binding);
+            if (this.worldInScope !== null) {
+              this.componentWorlds.set(expr, this.worldInScope);
+            } else if (!bound) {
+              /* A loop-bound access with no world cannot happen — the loop needed one and said so —
+                 so this is only ever a handle reached outside a loop. */
               this.report(
                 'DS0295',
                 'reaching a component through a handle needs a world to read it from and there ' +
@@ -2074,8 +2188,6 @@ class Checker {
                   'parameter and it runs against that.',
                 expr.span,
               );
-            } else {
-              this.handleComponents.set(expr, this.worldInScope);
             }
           }
           return this.record(expr, component);
@@ -2405,6 +2517,33 @@ class Checker {
     expr.args.forEach((arg, index) => {
       const parameter = signature.params[index];
       const actual = this.checkExpr(arg, scope, parameter.type);
+      if (parameter.component !== undefined) {
+        /*
+         * A component parameter takes a *row*, and a row is only ever `<entity>.<Component>`.
+         *
+         * Checked on the shape rather than on the type alone, because the type is the component's
+         * own and lowering needs the entity out of the expression: the parameter compiles to a
+         * world and a handle, and there is nowhere else to get the handle from.
+         */
+        const row = this.componentRowOf(arg);
+        if (row === null) {
+          this.report(
+            'DS0249',
+            `\`${name}\` takes a row of \`${parameter.component}\` for \`${parameter.name}\`, ` +
+              `written \`entity.${parameter.component}\`, but this is \`${nameOf(actual)}\``,
+            arg.span,
+          );
+        } else if (row !== parameter.component) {
+          this.report(
+            'DS0249',
+            `\`${name}\` takes a row of \`${parameter.component}\` for \`${parameter.name}\` ` +
+              `but this is a row of \`${row}\``,
+            arg.span,
+          );
+        }
+        return;
+      }
+      this.refuseComponentRow(arg, 'passed as an argument');
       if (!assignable(actual, parameter.type)) {
         this.report(
           'DS0263',
