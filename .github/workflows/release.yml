@@ -89,10 +89,25 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
+
+      # Both builds come first because the gates measure what they emit rather than what the source
+      # says: the size gate bundles what a consumer resolves, and the editors gate packs the
+      # extension into a .vsix and spawns the server inside it.
+      #
+      # `npm run extension` was missing here while this workflow was dispatch-only and had never
+      # been run, so the editors gate failed on a clean checkout with "run `npm run extension`
+      # first" — a release that would have died on its first attempt. `ci.yml` had it right and
+      # this had drifted from it, which is the argument for the two step lists staying identical.
       - run: npm run build
+      - run: npm run extension
+
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:scripts
+
+      # A grammar that has drifted still highlights, it just highlights the wrong things, so
+      # nothing else here would fail.
+      - run: npm run grammar:check
 
       # The gate. Ten rows, against a packed tarball, in a clean room outside the workspace —
       # because checking the workspace copy is what hid the defect this whole build exists for.
