@@ -198,11 +198,19 @@ test('the client falls back to a bundled server, which the build emits', () => {
 /**
  * A document using the newest forms, opened against the packed server.
  *
- * **Every line here is something a previous client could not parse**, which is the only reason a
+ * **Every line here is something a previous client could not handle**, which is the only reason a
  * line is in it: module constants, a list with its literal and its walk, `break`, a component row
- * as a parameter, a component reached through a handle, and a system's `uses` clause. When the
- * language grows a form, it is added here, and the day the packed client is older than the compiler
- * this fails with the code it produced rather than with a reminder to check by hand.
+ * as a parameter, a component reached through a handle, a system's `uses` clause, and a task that
+ * suspends inside a `for … in`. When the language grows a form, it is added here, and the day the
+ * packed client is older than the compiler this fails with the code it produced rather than with a
+ * reminder to check by hand.
+ *
+ * **"Could not parse" is not the only way a stale client fails, and 1.10.0 is why that sentence
+ * changed.** A 1.9.0 server meets `await` inside a `for … in` and *throws* from the emitter — the
+ * server runs the whole compile, so an emitter failure reaches a document the editor asked about.
+ * The file then gets no diagnostics at all rather than wrong ones, which looks from the outside
+ * exactly like a clean file. That is worse than a red squiggle and it is why the last line of the
+ * document below is a task.
  */
 const CURRENT_FORMS = `let LIMIT = 3
 
@@ -233,6 +241,12 @@ system Walk {
         for e in query<Placement>() {
             advance(e.Placement, 1)
         }
+    }
+}
+
+task drain(xs: List<f32>) {
+    for x in xs {
+        await fixedTime(500ms)
     }
 }
 `;
