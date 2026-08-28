@@ -174,6 +174,53 @@ describe('the schema in the metadata', () => {
   });
 });
 
+describe('a type key names the type and not its shape', () => {
+  /*
+   * **Every caller compares this string for equality**, so two types with one key are one type as
+   * far as a migration and an interface hash are concerned. The option paragraph below records the
+   * first time that went wrong; these are the rest of the same family, found while giving a task
+   * frame a layout to compare.
+   */
+  it('gives every integer width its own key', () => {
+    /*
+     * This returned `type.kind`, so all eight keyed as `int`. Three consequences, and the third
+     * left this repository: a migration would carry a `u8` into an `i64` and back, an interface
+     * changing `fn set(v: u8)` to `fn set(v: i64)` hashed identically so no dependent recompiled,
+     * and — because a component field's type is this string and a host's column table is keyed by
+     * the width — **every integer component field threw at bind**, naming a type no script wrote.
+     * Nothing in the corpus declared one, which is why it stood.
+     */
+    const keys = ['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64'].map((name) =>
+      typeKey({ kind: 'int', name }),
+    );
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(typeKey({ kind: 'int', name: 'u8' })).toBe('u8');
+  });
+
+  it('gives two enums different keys', () => {
+    expect(typeKey({ kind: 'enum', name: 'Mood' })).not.toBe(typeKey({ kind: 'enum', name: 'Phase' }));
+  });
+
+  it('names what a list holds', () => {
+    expect(typeKey({ kind: 'list', of: { kind: 'f32' } })).not.toBe(
+      typeKey({ kind: 'list', of: { kind: 'string' } }),
+    );
+    expect(typeKey({ kind: 'list', of: { kind: 'f32' } })).toBe('list:f32');
+  });
+
+  it('names both halves of a result', () => {
+    expect(
+      typeKey({ kind: 'result', ok: { kind: 'f32' }, err: { kind: 'string' } }),
+    ).not.toBe(typeKey({ kind: 'result', ok: { kind: 'string' }, err: { kind: 'f32' } }));
+  });
+
+  it('refuses a type it has no key for, rather than giving it a shared one', () => {
+    /* The failure mode is the whole point: a default would make every unkeyed type equal to every
+       other unkeyed type, which is how `int` came to mean eight widths at once. */
+    expect(() => typeKey({ kind: 'somethingNew' } as never)).toThrow(/somethingNew/);
+  });
+});
+
 describe('an option field names its inner type', () => {
   /*
    * A migration compares this key to decide whether a value may carry between two fields. While
