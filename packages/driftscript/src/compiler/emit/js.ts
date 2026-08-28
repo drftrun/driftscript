@@ -36,12 +36,14 @@ import { SYSTEM_VIEW } from '../check/checker.ts';
  */
 const RESOURCES = '$res';
 import { entityMetadata } from './entityMeta.ts';
+import type { DriftTaskAbi } from '../../runtime/module.ts';
 import { MappingBuilder, type SourceMap } from './sourceMap.ts';
 import {
   type TaskStmt,
   type Terminator,
   blocksOf,
   frameField,
+  frameLayout,
   frameNames,
   listFields,
   ownerText,
@@ -681,7 +683,7 @@ function emitTask(writer: Writer, task: IrTask, options: TaskEmitOptions = {}): 
   const machine = options.machine === true;
 
   writer.block(options.open ?? `export const ${jsName(task.name)} = {`, () => {
-    writer.line_(`name: ${JSON.stringify(task.name)},`);
+    writer.line_(`name: ${jsString(task.name)},`);
 
     writer.block(
       `start($f${params.map((p) => `, ${p}`).join('')}${machine ? ', $machine' : ''}) {`,
@@ -960,6 +962,28 @@ const HELPERS: Readonly<Record<string, string>> = {
 }`,
 };
 
+/**
+ * Every task in a module, by name, with the ABI a hot patch checks a live frame against.
+ *
+ * A state machine's entry block is a task too and is included: it suspends, it carries a frame, and
+ * a patch has exactly the same question to answer about one.
+ */
+function taskAbis(ir: IrModule): Record<string, DriftTaskAbi> {
+  const abis: Record<string, DriftTaskAbi> = {};
+  const record = (task: IrTask): void => {
+    const bound = new Set(frameNames(task));
+    abis[task.name] = {
+      fields: frameLayout(task).map((slot) => [slot.name, slot.type] as const),
+      conts: blocksOf(rewriteStmts(task.body, bound)).map((block) => block.id),
+    };
+  };
+  for (const task of ir.tasks) record(task);
+  for (const state of ir.states) {
+    if (state.enter !== null) record(state.enter);
+  }
+  return abis;
+}
+
 export function emitJs(ir: IrModule, options: EmitOptions): EmitResult {
   const writer = new Writer(options.source);
 
@@ -1129,6 +1153,21 @@ export function emitJs(ir: IrModule, options: EmitOptions): EmitResult {
       entityTypes: entities.entities,
       systems: entities.systems,
       prefabs: entities.prefabs,
+      /*
+       * Each task's frame layout and the identity of each of its resume points.
+       *
+       * **A live task's frame is compiler-generated ABI**, and until this existed a patch rebound a
+       * suspended task on its exported *name* alone — so a version that had grown an `await`
+       * earlier in the body resumed an old frame at a `step` that now meant a different
+       * continuation, and a version that had added a local read a field the old frame never had.
+       * Both ran, and neither failed anywhere a person could see.
+       *
+       * Here rather than on the task object because `patchModule` holds both versions of *this* —
+       * the module's old `info` and the new namespace's — and because a task object is held to
+       * carrying nothing but methods and literals, which `topLevel.test.ts` asserts: allocating one
+       * has to read nothing and call nothing.
+       */
+      tasks: taskAbis(ir),
       /* Whether the host must call `__bind` before anything else in this module works. A runtime
          that guessed by looking for the export would be guessing; this says so. */
       binds: ir.namespaces.length > 0,

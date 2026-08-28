@@ -17,7 +17,12 @@ import { deadlineAfter } from './clocks.ts';
 import type { Schema } from './state.ts';
 import { emit, onGenerated } from './events.ts';
 import { createMachine } from './machine.ts';
-import { type Scope, createScope, spawn } from './tasks.ts';
+import { type Scope, type TaskAbi, createScope, spawn } from './tasks.ts';
+
+/* Re-exported under the `Drift…` name the rest of this file's types carry, so a host reaching for
+   the module info's own vocabulary finds it. `tasks.ts` owns the shape because `tasks.ts` is what
+   reads it. */
+export type { TaskAbi as DriftTaskAbi } from './tasks.ts';
 
 /** What the generated `__drift` export carries. Emitted as a literal, so a bundler sees through it. */
 export interface DriftModuleInfo {
@@ -44,6 +49,19 @@ export interface DriftModuleInfo {
   readonly entityTypes?: readonly DriftEntityInfo[];
   readonly systems?: readonly DriftSystemInfo[];
   readonly prefabs?: readonly DriftPrefabInfo[];
+  /**
+   * Each task's frame layout and the identity of each of its resume points, by task name.
+   *
+   * **This is what makes a live task's hot patch checkable.** A suspended task is a frame the
+   * compiler laid out and an integer selecting a continuation, and both are generated ABI — so
+   * rebinding a running task to new code on the strength of its *exported name*, which is what
+   * happened before this existed, assumed a compatibility nothing had established.
+   *
+   * Optional for the reason `schemas` is: a module compiled by an earlier version has none, and a
+   * runtime that threw on one would refuse to load a module that works perfectly for everything
+   * except patching a live task. `patchModule` refuses the *patch* instead, naming the task.
+   */
+  readonly tasks?: Readonly<Record<string, TaskAbi>>;
 }
 
 /** A component a module declares, or asserts about its host. */

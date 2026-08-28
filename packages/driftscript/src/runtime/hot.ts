@@ -25,7 +25,7 @@ import { rebindHost, runtimeFor, type DriftModule, type DriftModuleInfo } from '
 import { closeGeneratedHandlersOf } from './events.ts';
 import { migrate } from './migrate.ts';
 import type { Schema } from './state.ts';
-import { rebindTasks } from './tasks.ts';
+import { applyTaskRebind, planTaskRebind } from './tasks.ts';
 
 export type PatchResult =
   | { readonly patched: true }
@@ -143,6 +143,14 @@ export function patchModule(
     }
   }
 
+  /*
+   * The live tasks, planned before anything is written and beside the record migrations for the
+   * same reason: a suspended frame is state, and a patch that could not carry it has to refuse the
+   * whole thing rather than carry half of it.
+   */
+  const plan = planTaskRebind(module.scope, namespace, next.tasks, module.info.tasks);
+  if (!plan.ok) return { patched: false, reason: plan.reason };
+
   for (const name of Object.keys(module.info.shapes)) {
     if (next.shapes[name] === undefined) {
       return {
@@ -172,9 +180,10 @@ export function patchModule(
   }
 
   /* A live task is pointed at the new code and keeps its frame, so a task mid-way through a
-     three-second wait keeps the seconds it has already waited. Nothing above this line has run,
-     so a refused patch leaves every task on the version its frame belongs to. */
-  rebindTasks(module.scope, module.exports);
+     three-second wait keeps the seconds it has already waited. The plan was proved before the
+     first write above, so nothing here can fail — and a refused patch left every task on the
+     version its frame belongs to. */
+  applyTaskRebind(plan.rebinds);
 
   /*
    * Handlers are closed and registered again from the new version, rather than pointed at it.

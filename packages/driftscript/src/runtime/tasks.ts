@@ -75,6 +75,22 @@ export interface TaskFrame {
   awaiting: TaskHandle | null;
 }
 
+/**
+ * One task's generated ABI: what its frame holds, and what each resume point means.
+ *
+ * `conts` is indexed by the integer a frame's `step` carries. `null` marks a block only a jump
+ * reaches, which a suspended frame can never point at. A non-null entry is a **path**: the
+ * control-flow constructs enclosing the suspension, and its ordinal among the suspensions at its
+ * level — so an edit that changes arithmetic keeps every id, and an edit that inserts, removes or
+ * reorders an `await` moves the ones after it, which is exactly when an old `step` has stopped
+ * meaning what it meant.
+ */
+export interface TaskAbi {
+  /** `[property, type]` per frame slot, in the spelling generated code writes. */
+  readonly fields: readonly (readonly [string, string])[];
+  readonly conts: readonly (string | null)[];
+}
+
 /** One task's generated code: a constructor for its frame and a switch over its resume points. */
 export interface TaskBody {
   /** The exported name this body came from. What a hot patch matches a live task on. */
@@ -240,26 +256,191 @@ function isTaskBody(value: unknown): value is TaskBody {
 }
 
 /**
- * Point a scope's live tasks at freshly compiled code, keeping every frame where it is.
+ * What a patch will do to one live task, worked out before anything is written.
  *
- * **This is what makes a task survive a hot reload rather than restart**, and it is the same
- * indirection `module.ts` describes one level up: the frame is the scheduler's, the code is the
- * module's, and a patch replaces only the second. A task mid-way through a three-second wait keeps
- * the two-and-a-half seconds it has already waited.
- *
- * Matched by name, because that is the only identity a task body has across a recompile — a fresh
- * compile produces new objects for everything. A task whose name is gone from the new version is
- * **left on its old code** rather than cancelled: it is already running, its frame is still
- * coherent, and killing live work because a name moved would make renaming a task a scene reset.
- * What would make that wrong is a rename that changes what the task *does* while it is suspended,
- * which is the shape-change problem `hot.ts` refuses for records and Phase 5 turns into migration.
+ * Kept as data rather than applied on the spot for the reason `patchModule` gives about records: a
+ * refusal on the third task must leave the first two exactly as they were, on the version their
+ * frames belong to. A half-patched module is a state no source file describes.
  */
-export function rebindTasks(owner: Scope, exports: Record<string, unknown>): void {
+interface TaskRebind {
+  readonly task: Task;
+  readonly body: TaskBody;
+  /** The block index the old `step` means in the new code. */
+  readonly step: number;
+  /** Frame properties the new version has and the old frame does not. */
+  readonly add: readonly string[];
+  /** Frame properties the old frame has and the new version does not. */
+  readonly drop: readonly string[];
+}
+
+export type TaskRebindPlan =
+  | { readonly ok: true; readonly rebinds: readonly TaskRebind[] }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Whether a scope's live tasks can be moved onto freshly compiled code, and how.
+ *
+ * ---
+ *
+ * ## A suspended task is state, and it was the one kind not being checked
+ *
+ * The record path has had the right shape for a while: compare the schemas, compute every migration
+ * before mutating, refuse by name when a change cannot be carried. A live task frame is state in
+ * exactly the same sense — it holds the task's locals and an integer selecting where it resumes —
+ * and it was being handed to new code on the strength of the **exported name** alone.
+ *
+ * Two things went wrong quietly. A version that inserted an `await` earlier in the body renumbered
+ * the resume points, so an old frame's `step` selected a continuation belonging to different source
+ * — the task carried on running, at the wrong place, for ever. A version that added a local read a
+ * frame field that was never initialised, so the arithmetic that used it produced `undefined` and
+ * the failure surfaced somewhere else entirely.
+ *
+ * ## What identity a continuation has
+ *
+ * Not its integer. `conts` maps each block index to a **path** — the control-flow constructs around
+ * the suspension and its ordinal among the suspensions at its level — so the question "is this the
+ * same resume point" is asked of something an edit can be judged against. The sequence describes the
+ * *shape* of a task's suspensions and deliberately says nothing about their content, which is what
+ * lets a duration change and lets the code around an `await` be rewritten: hot reload is for exactly
+ * those edits, and this file's own opening paragraph promises them.
+ *
+ * The whole sequence is compared rather than one id looked up, and the reason is at the comparison.
+ *
+ * ## What is migrated and what is refused
+ *
+ * A field the new version added is initialised to `undefined`, which is exactly what `start` does
+ * for a local of a freshly spawned task. A field it dropped is deleted, so code still reading it
+ * fails rather than seeing a value from a version that no longer exists. **A field whose type
+ * changed is refused**, because there is nothing to convert it to — the same answer the record path
+ * gives, and for the same reason: a `phase` that was an `f32` and is now a `String` has no value
+ * that is both.
+ */
+export function planTaskRebind(
+  owner: Scope,
+  exports: Record<string, unknown>,
+  /** The new version's `__drift.tasks`, and the old version's, keyed by task name. */
+  next: Readonly<Record<string, TaskAbi>> | undefined,
+  previous: Readonly<Record<string, TaskAbi>> | undefined,
+): TaskRebindPlan {
+  const rebinds: TaskRebind[] = [];
+
   for (let i = 0; i < tasks.length; i += 1) {
     const task = tasks[i];
     if (task === undefined || !task.live || task.owner !== owner) continue;
-    const replacement = exports[task.body.name];
-    if (isTaskBody(replacement)) task.body = replacement;
+
+    const name = task.body.name;
+    const replacement = exports[name];
+    /*
+     * A task whose name is gone from the new version is **left on its old code** rather than
+     * cancelled: it is already running, its frame is still coherent, and killing live work because
+     * a name moved would make renaming a task a scene reset.
+     */
+    if (!isTaskBody(replacement)) continue;
+
+    const before = previous?.[name];
+    const after = next?.[name];
+    if (before === undefined || after === undefined) {
+      return {
+        ok: false,
+        reason:
+          `\`${name}\` is running and one of the two versions carries no task ABI, so there is ` +
+          'nothing to check its frame and its resume point against. Recompile both with a version ' +
+          'of the compiler that emits one.',
+      };
+    }
+
+    const at = before.conts[task.frame.step];
+    if (at === undefined || at === null) {
+      return {
+        ok: false,
+        reason:
+          `\`${name}\` is suspended at a point its own version does not name, so where it would ` +
+          'resume in the new code cannot be worked out. The module was left on its previous version.',
+      };
+    }
+
+    /*
+     * **The whole shape has to match, not just this one id.**
+     *
+     * An id is a path and an ordinal among the suspensions at its level, which describes the shape
+     * of a task's suspensions and deliberately says nothing about their content — so that changing
+     * a duration or the code around an `await`, which is what hot reload is *for*, keeps it.
+     *
+     * The cost is that an id cannot be looked up on its own. Inserting an `await` at the start and
+     * appending one at the end produce the same set of ids, and in the first case every id now
+     * names a different suspension: a frame resuming at `0` would run the new first `await`'s
+     * continuation believing it was its own. Comparing the sequences refuses both, which is the
+     * honest reading of what these ids know.
+     *
+     * So: **edit a task's body freely while it is running; change where it suspends and the patch
+     * is refused.** `indexOf` below then carries the frame onto whatever block index the new
+     * version put that same resume point at, which control flow around it can still move.
+     */
+    if (!sameShape(before.conts, after.conts)) {
+      return {
+        ok: false,
+        reason:
+          `\`${name}\` is running, and the new version suspends in a different shape — an ` +
+          '`await` was added, removed or moved. The frame is suspended at a resume point that no ' +
+          'longer means the same place, so it cannot be carried across. Let the task finish, or ' +
+          'restart the scene.',
+      };
+    }
+
+    const step = after.conts.indexOf(at);
+
+    const was = new Map(before.fields);
+    const now = new Map(after.fields);
+    for (const [field, type] of now) {
+      const had = was.get(field);
+      if (had !== undefined && had !== type) {
+        return {
+          ok: false,
+          reason:
+            `\`${name}\` is running and its \`${field}\` changed from \`${had}\` to ` +
+            `\`${type}\`. There is no value that is both, so the live frame cannot be carried ` +
+            'across. The module was left on its previous version.',
+        };
+      }
+    }
+
+    rebinds.push({
+      task,
+      body: replacement,
+      step,
+      add: [...now.keys()].filter((field) => !was.has(field)),
+      drop: [...was.keys()].filter((field) => !now.has(field)),
+    });
+  }
+
+  return { ok: true, rebinds };
+}
+
+/**
+ * Carry out a plan `planTaskRebind` already proved.
+ *
+ * Nothing here can fail, which is the point: every question was answered before the first write.
+ */
+/** Whether two versions suspend in the same places, in the same order. */
+function sameShape(
+  before: readonly (string | null)[],
+  after: readonly (string | null)[],
+): boolean {
+  const ids = (conts: readonly (string | null)[]): string =>
+    conts.filter((id): id is string => id !== null).join('|');
+  return ids(before) === ids(after);
+}
+
+export function applyTaskRebind(rebinds: readonly TaskRebind[]): void {
+  for (const rebind of rebinds) {
+    const frame = rebind.task.frame as unknown as Record<string, unknown>;
+    for (const field of rebind.drop) delete frame[field];
+    /* `undefined` rather than a zero, because it is what `start` writes for a local of a freshly
+       spawned task — a patched frame and a new one differ in the values the task has computed, and
+       in nothing else. */
+    for (const field of rebind.add) frame[field] = undefined;
+    rebind.task.frame.step = rebind.step;
+    rebind.task.body = rebind.body;
   }
 }
 

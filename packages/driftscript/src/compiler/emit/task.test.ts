@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { compileDriftScript, singleFileHost } from '../index.ts';
 import { createRegistry, defineCapability } from '../../registry/capability.ts';
 import { clearClockSource, setClockSource } from '../../runtime/clocks.ts';
-import { disposeModule, loadModule } from '../../runtime/module.ts';
+import { bindHost, disposeModule, loadModule } from '../../runtime/module.ts';
 import { type TaskBody, liveTaskCount, spawn, tickTasks } from '../../runtime/tasks.ts';
+import { patchModule } from '../../runtime/hot.ts';
 
 let steps = 0;
 let frame = 0;
@@ -644,5 +645,142 @@ describe('a `for … in` that suspends', () => {
       { filename: 't.drs', host: singleFileHost(), registry: registry(), mode: 'development' },
     );
     expect(diagnostics.map((d) => d.code)).toContain('DS0289');
+  });
+});
+
+describe('a hot patch across a task compiled from real source', () => {
+  /*
+   * The matrix in `runtime/tasks.test.ts` drives hand-written ABIs, which is what makes it able to
+   * cover cases the compiler cannot be talked into emitting. This is the other half: the compiler
+   * actually emits an ABI that distinguishes the two edits that matter, from two real source files.
+   */
+  const patch = async (before: string, after: string) => {
+    const module = await load(before);
+    /* Through `bindHost` rather than by calling `__bind` directly, because that is what records the
+       host for `rebindHost` — a patched module has new closures and has to be bound again. */
+    const marks: number[] = [];
+    bindHost(module, { 'drift/events': { mark: (value: number) => marks.push(value) } });
+    spawn(module.exports.settle as TaskBody, module.scope);
+
+    const namespace = (await import(
+      /* @vite-ignore */ `data:text/javascript;base64,${btoa(compile(after))}`
+    )) as Record<string, unknown>;
+    return { module, marks, result: patchModule(module, namespace) };
+  };
+
+  const V1 =
+    'import { mark } from "drift/events"\n' +
+    '\n' +
+    'task settle() {\n' +
+    '    await fixedTime(500ms)\n' +
+    '    events.mark(1)\n' +
+    '}\n';
+
+  it('accepts an edit after the resume point, and the new code runs from it', async () => {
+    const { module, marks, result } = await patch(
+      V1,
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task settle() {\n' +
+        '    await fixedTime(500ms)\n' +
+        '    events.mark(2)\n' +
+        '}\n',
+    );
+    expect(result).toEqual({ patched: true });
+
+    steps = 30;
+    tickTasks();
+    /* The patched code ran, from the point the old code had reached — not from the beginning. */
+    expect(marks).toEqual([2]);
+    module.scope.leave();
+  });
+
+  it('refuses an edit that inserts an `await` before the resume point', async () => {
+    /*
+     * The failure this exists for. Block numbering is positional, so the old frame's `step` would
+     * have selected the continuation of the *new* first await — and the task would have carried on
+     * running, at the wrong place, silently.
+     */
+    const { module, marks, result } = await patch(
+      V1,
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task settle() {\n' +
+        '    await fixedTime(100ms)\n' +
+        '    await fixedTime(500ms)\n' +
+        '    events.mark(2)\n' +
+        '}\n',
+    );
+    expect(result.patched).toBe(false);
+    expect((result as { reason: string }).reason).toContain('settle');
+
+    steps = 30;
+    tickTasks();
+    /* Left on the version its frame belongs to, and still correct. */
+    expect(marks).toEqual([1]);
+    module.scope.leave();
+  });
+
+  it('refuses an edit that changes the type of a local held across the suspension', async () => {
+    const { module, result } = await patch(
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task settle() {\n' +
+        '    let held = 1\n' +
+        '    await fixedTime(500ms)\n' +
+        '    events.mark(held)\n' +
+        '}\n',
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task settle() {\n' +
+        '    let held = "one"\n' +
+        '    await fixedTime(500ms)\n' +
+        '    events.mark(1)\n' +
+        '}\n',
+    );
+    expect(result.patched).toBe(false);
+    expect((result as { reason: string }).reason).toContain('$held');
+    module.scope.leave();
+  });
+
+  it('accepts an edit that adds a local after the resume point', async () => {
+    const { module, result } = await patch(
+      V1,
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task settle() {\n' +
+        '    await fixedTime(500ms)\n' +
+        '    let extra = 2\n' +
+        '    events.mark(extra)\n' +
+        '}\n',
+    );
+    expect(result).toEqual({ patched: true });
+    module.scope.leave();
+  });
+
+  it('gives a suspension inside a `while` an id that survives an edit around it', async () => {
+    /* A loop is where a long-running task actually sits, and its resume point is named by the
+       construct rather than by a block index — so editing the body does not move it. */
+    const before =
+      'import { mark } from "drift/events"\n' +
+      '\n' +
+      'task settle() {\n' +
+      '    var n = 0\n' +
+      '    while n < 3 {\n' +
+      '        await fixedTime(500ms)\n' +
+      '        n += 1\n' +
+      '        events.mark(n)\n' +
+      '    }\n' +
+      '}\n';
+    const { module, marks, result } = await patch(
+      before,
+      before.replace('events.mark(n)', 'events.mark(n + 10)'),
+    );
+    expect(result).toEqual({ patched: true });
+
+    steps = 30;
+    tickTasks();
+    expect(marks).toEqual([11]);
+    module.scope.leave();
   });
 });

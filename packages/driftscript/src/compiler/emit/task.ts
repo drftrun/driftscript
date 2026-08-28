@@ -34,6 +34,7 @@
 import type { Span } from '../ast.ts';
 import type { IrExpr, IrOwner, IrStmt, IrTask } from '../ir/ir.ts';
 import { anyStmt, visitStmts } from '../ir/walk.ts';
+import { typeKey } from '../schema/typeKey.ts';
 
 /**
  * A statement inside a block, which is the language's own plus two the cut introduces.
@@ -104,6 +105,25 @@ export type Terminator =
 export interface Block {
   readonly stmts: TaskStmt[];
   terminator: Terminator;
+  /**
+   * What this resume point *is*, independently of which integer it happens to be.
+   *
+   * `null` for a block only a jump reaches — a loop head, a branch arm, a join — because a
+   * suspended frame can never be pointing at one. A block a suspension resumes into gets a path:
+   * the control-flow constructs enclosing it, and its ordinal among the suspensions at its level.
+   *
+   * **The ordinal counts suspensions, not statements**, and that is the whole design: the sequence
+   * of ids describes the *shape* of a task's suspensions and says nothing about their content. So
+   * editing arithmetic around an `await`, adding a `let`, renaming a local or changing a duration
+   * leaves the shape identical, and a live task survives the patch — while adding, removing or
+   * moving an `await` changes it, and the patch is refused. The integer alone could not tell those
+   * two apart, so a hot patch rebound on the task's *name* and hoped.
+   *
+   * An id is not a lookup key on its own: inserting an `await` at the start and appending one at
+   * the end produce the same set of ids. `runtime/tasks.ts` compares the whole sequence, and says
+   * so at more length.
+   */
+  readonly id: string | null;
 }
 
 /**
@@ -158,24 +178,65 @@ export function listFields(depth: number): { list: string; index: string } {
   return { list: `$l${depth}`, index: `$n${depth}` };
 }
 
+/** One slot on a task's frame: the property generated code writes, and what it holds. */
+export interface FrameSlot {
+  /** The property name, `$`-prefixed exactly as generated code spells it. */
+  readonly name: string;
+  /** `typeKey` of what it holds, or a word for the two slots that hold no language value. */
+  readonly type: string;
+}
+
 /**
- * Every name a task binds: its parameters, then every `let` at any depth.
+ * Every slot a task's frame carries, with what each holds.
+ *
+ * **The types are here because a hot patch needs them.** A frame is compiler-generated layout, and
+ * two versions of a task agreeing on the *names* of its locals says nothing about whether a live
+ * frame can be handed to the new code: `phase: f32` becoming `phase: String` leaves the name list
+ * identical, which is the hole the record path closed by comparing schemas rather than field names.
+ * A task frame is state in exactly the same sense.
  *
  * The walk used to stop at a `for` loop, so a `let` written inside one was rewritten into a frame
- * *write* while every read of it stayed a bare identifier — a `ReferenceError` on the first
- * iteration, from code that compiled without a diagnostic.
+ * *write* while every read of it stayed a bare identifier.
  */
-export function frameNames(task: IrTask): string[] {
-  const names = task.params.map((p) => p.name);
+export function frameLayout(task: IrTask): FrameSlot[] {
+  const slots: FrameSlot[] = task.params.map((p) => ({
+    name: frameField(p.name),
+    type: typeKey(p.type),
+  }));
+
   visitStmts(task.body, (stmt) => {
-    if (stmt.kind === 'let') names.push(stmt.name);
-    /* A scope's handle lives on the frame like any other binding: the block it belongs to can span
-       a suspend, and a scope that died at one would leave its tasks unowned. */
-    if (stmt.kind === 'scope') names.push(stmt.name);
+    if (stmt.kind === 'let') slots.push({ name: frameField(stmt.name), type: typeKey(stmt.type) });
+    if (stmt.kind === 'scope') {
+      /* A scope's handle lives on the frame like any other binding: the block it belongs to can
+         span a suspend, and a scope that died at one would leave its tasks unowned. It holds a
+         runtime object rather than a language value, so it has no `typeKey` — the word is what a
+         migration compares, which is all it needs. */
+      slots.push({ name: frameField(stmt.name), type: 'scope' });
+    }
     if (stmt.kind === 'forList' && cutsForList(stmt)) {
       /* A cut loop's binding survives the suspension in its body, and so must the two temporaries
          that say where the walk had got to. They are named `$l`/`$n` so `frameField` prefixes them
          into `$$l0`/`$$n0`, which no source identifier can collide with — a `$` cannot start one. */
+      const { list, index } = listFields(stmt.depth);
+      const of = stmt.subject.type.kind === 'list' ? stmt.subject.type.of : stmt.subject.type;
+      slots.push(
+        { name: frameField(stmt.binding), type: typeKey(of) },
+        { name: frameField(list), type: typeKey(stmt.subject.type) },
+        { name: frameField(index), type: 'u32' },
+      );
+    }
+  });
+
+  return slots;
+}
+
+/** Every name a task binds, in the spelling the rewrite matches against. */
+export function frameNames(task: IrTask): string[] {
+  const names = task.params.map((p) => p.name);
+  visitStmts(task.body, (stmt) => {
+    if (stmt.kind === 'let') names.push(stmt.name);
+    if (stmt.kind === 'scope') names.push(stmt.name);
+    if (stmt.kind === 'forList' && cutsForList(stmt)) {
       const { list, index } = listFields(stmt.depth);
       names.push(stmt.binding, list, index);
     }
@@ -407,8 +468,8 @@ function listTest(depth: number, span: Span): IrExpr {
  */
 export function blocksOf(body: readonly IrStmt[]): Block[] {
   const blocks: Block[] = [];
-  const create = (): number => {
-    blocks.push({ stmts: [], terminator: { kind: 'done' } });
+  const create = (id: string | null = null): number => {
+    blocks.push({ stmts: [], terminator: { kind: 'done' }, id });
     return blocks.length - 1;
   };
 
@@ -424,11 +485,15 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
    */
   const loops: { head: number; next: number; exit: number }[] = [];
 
-  const lower = (stmts: readonly IrStmt[], from: number): number => {
+  const lower = (stmts: readonly IrStmt[], from: number, path = ''): number => {
     let current = from;
+    /* Incremented for every construct at this level that can hold a suspension, and for nothing
+       else — see `Block.id`. A statement that cannot suspend leaves every id below it untouched. */
+    let at = 0;
     for (const stmt of stmts) {
       if (stmt.kind === 'await') {
-        const next = create();
+        const next = create(`${path}${at}`);
+        at += 1;
         blocks[current].terminator = {
           kind: 'await',
           clock: stmt.clock,
@@ -440,7 +505,8 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
       }
 
       if (stmt.kind === 'awaitTask') {
-        const next = create();
+        const next = create(`${path}${at}`);
+        at += 1;
         blocks[current].terminator = {
           kind: 'awaitTask',
           task: stmt.task,
@@ -489,8 +555,15 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
           then: thenBlock,
           otherwise: elseBlock,
         };
-        blocks[lower(stmt.then, thenBlock)].terminator = { kind: 'jump', target: join };
-        blocks[lower(stmt.otherwise ?? [], elseBlock)].terminator = { kind: 'jump', target: join };
+        blocks[lower(stmt.then, thenBlock, `${path}${at}.then/`)].terminator = {
+          kind: 'jump',
+          target: join,
+        };
+        blocks[lower(stmt.otherwise ?? [], elseBlock, `${path}${at}.else/`)].terminator = {
+          kind: 'jump',
+          target: join,
+        };
+        at += 1;
         current = join;
         continue;
       }
@@ -503,7 +576,8 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
          * is why every task has a scope of its own that is left however it ends.
          */
         blocks[current].stmts.push({ kind: 'scopeOpen', name: stmt.name, parent: stmt.parent, span: stmt.span });
-        const end = lower(stmt.body, current);
+        const end = lower(stmt.body, current, `${path}${at}.scope/`);
+        at += 1;
         blocks[end].stmts.push({ kind: 'scopeClose', name: stmt.name, span: stmt.span });
         current = end;
         continue;
@@ -523,7 +597,11 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
         /* Pushed around the body only. A jump in the *condition* is not expressible, and one in a
            sibling statement belongs to whatever encloses this loop rather than to it. */
         loops.push({ head, next: head, exit });
-        blocks[lower(stmt.body, body)].terminator = { kind: 'jump', target: head };
+        blocks[lower(stmt.body, body, `${path}${at}.while/`)].terminator = {
+          kind: 'jump',
+          target: head,
+        };
+        at += 1;
         loops.pop();
         current = exit;
         continue;
@@ -564,7 +642,11 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
           span: stmt.span,
         });
         loops.push({ head, next: step, exit });
-        blocks[lower(stmt.body, body)].terminator = { kind: 'jump', target: step };
+        blocks[lower(stmt.body, body, `${path}${at}.for/`)].terminator = {
+          kind: 'jump',
+          target: step,
+        };
+        at += 1;
         loops.pop();
         blocks[step].stmts.push({ kind: 'listStep', depth: stmt.depth, span: stmt.span });
         blocks[step].terminator = { kind: 'jump', target: head };
@@ -577,7 +659,7 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
     return current;
   };
 
-  const entry = create();
+  const entry = create('entry');
   const last = lower(body, entry);
   blocks[last].terminator = { kind: 'done' };
   return blocks;

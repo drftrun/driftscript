@@ -297,9 +297,22 @@ describe('nested scopes', () => {
 });
 
 describe('a module that owns tasks', () => {
+  /**
+   * The ABI a compiler emits for the body below: two blocks, the second reached by the suspension.
+   *
+   * Spelled out here because this fixture is hand-written rather than compiled — the compiled side
+   * is covered in `compiler/emit/task.test.ts`. What matters is that a patch has *both* versions'
+   * answers to compare, which is what a live task's rebind now requires.
+   */
+  const ABI = { fields: [], conts: ['entry', '0'] };
+
   /** A namespace shaped like a generated module, with one task body exported under `signal`. */
-  const namespace = (mark: string, log: string[]): Record<string, unknown> => ({
-    __drift: { module: 'm', requires: [], shapes: {} },
+  const namespace = (
+    mark: string,
+    log: string[],
+    abi: unknown = ABI,
+  ): Record<string, unknown> => ({
+    __drift: { module: 'm', requires: [], shapes: {}, tasks: { signal: abi } },
     signal: {
       name: 'signal',
       start(f: TaskFrame) {
@@ -442,5 +455,207 @@ describe('the per-tick cost', () => {
     expect(noisy, 'the control must separate the two states').toBeGreaterThan(3);
     expect(quiet).toBeLessThan(noisy / 4);
     expect(sink).not.toBe(undefined);
+  });
+});
+
+describe('a hot patch across a live task', () => {
+  /*
+   * **A suspended task is state, and this is the matrix that says so.**
+   *
+   * The record path has had the right shape for a while: compare, plan, refuse by name, mutate
+   * only once the whole patch is known to be safe. A live task frame is state in exactly the same
+   * sense — the task's locals and an integer selecting where it resumes — and it was being handed
+   * to new code on the strength of the exported *name* alone.
+   *
+   * Every row below has a stated outcome. There is no fourth category: a patch either preserves the
+   * task, migrates it, or is refused atomically.
+   */
+  /** A module namespace with one live task, its ABI given per version. */
+  const versionOf = (abi: {
+    fields: (readonly [string, string])[];
+    conts: (string | null)[];
+  }): Record<string, unknown> => ({
+    __drift: { module: 'm', requires: [], shapes: {}, tasks: { signal: abi } },
+    signal: {
+      name: 'signal',
+      start(f: TaskFrame) {
+        f.step = 0;
+      },
+      resume(f: TaskFrame) {
+        if (f.step === 0) {
+          f.clock = 'fixed';
+          f.deadline = deadlineAfter('fixed', 1);
+          f.step = 1;
+          return 'waiting';
+        }
+        return 'done';
+      },
+    } satisfies TaskBody,
+  });
+
+  const V1 = {
+    fields: [['$phase', 'f32']] as (readonly [string, string])[],
+    conts: ['entry', '0'] as (string | null)[],
+  };
+
+  /** Start a module with `V1` live and suspended, then patch it with `next`. */
+  const patchWith = (next: Record<string, unknown>) => {
+    const module = loadModule(versionOf(V1));
+    spawn(module.exports.signal as TaskBody, module.scope);
+    return { module, result: patchModule(module, next) };
+  };
+
+  it('preserves the task when the body changed but the frame and the resume points did not', () => {
+    /* The common edit: change what happens after the `await`. Every id survives, so the task keeps
+       the seconds it has already waited. */
+    const { module, result } = patchWith(versionOf(V1));
+    expect(result).toEqual({ patched: true });
+    module.scope.leave();
+  });
+
+  it('migrates a frame that gained a local, initialising it the way `start` would', () => {
+    const { module, result } = patchWith(
+      versionOf({ fields: [...V1.fields, ['$extra', 'f32']], conts: [...V1.conts] }),
+    );
+    expect(result).toEqual({ patched: true });
+    module.scope.leave();
+  });
+
+  it('migrates a frame that lost a local, so nothing reads a value from a dead version', () => {
+    const { module, result } = patchWith(versionOf({ fields: [], conts: [...V1.conts] }));
+    expect(result).toEqual({ patched: true });
+    module.scope.leave();
+  });
+
+  it('migrates a reordered frame, because a field is matched by name and not by position', () => {
+    const { module, result } = patchWith(
+      versionOf({
+        fields: [
+          ['$extra', 'f32'],
+          ['$phase', 'f32'],
+        ],
+        conts: [...V1.conts],
+      }),
+    );
+    expect(result).toEqual({ patched: true });
+    module.scope.leave();
+  });
+
+  it('follows a resume point that moved to a different block index', () => {
+    /*
+     * Control flow around a suspension can change the block *numbering* without changing where the
+     * task suspends — an `if` that started being cut, say. The shape is the same, so the patch is
+     * accepted and the frame's `step` is carried onto the index the new version put it at. The
+     * integer alone could not have expressed either half of that.
+     */
+    const { module, result } = patchWith(
+      versionOf({ fields: [...V1.fields], conts: ['entry', null, '0'] }),
+    );
+    expect(result).toEqual({ patched: true });
+    module.scope.leave();
+  });
+
+  it('refuses an appended `await`, because an id cannot tell append from insert', () => {
+    /*
+     * `conts` describes the *shape* of a task's suspensions and deliberately not their content, so
+     * that changing a duration or the code around an `await` keeps every id — which is what hot
+     * reload is for. The price is that adding a suspension at the end and adding one at the start
+     * produce the same set of ids, and in the second case every id names a different `await`. Both
+     * are refused rather than one being guessed at.
+     */
+    const { module, result } = patchWith(
+      versionOf({ fields: [...V1.fields], conts: ['entry', '0', '1'] }),
+    );
+    expect(result.patched).toBe(false);
+    module.scope.leave();
+  });
+
+  it('refuses when a live local changed type', () => {
+    /* The record path's own answer: a `phase` that was an `f32` and is now a `String` has no value
+       that is both. */
+    const { module, result } = patchWith(
+      versionOf({ fields: [['$phase', 'string']], conts: [...V1.conts] }),
+    );
+    expect(result.patched).toBe(false);
+    expect((result as { reason: string }).reason).toContain('$phase');
+    expect((result as { reason: string }).reason).toContain('f32');
+    module.scope.leave();
+  });
+
+  it('refuses when the resume point the frame names is gone', () => {
+    /*
+     * Inserting an `await` *before* the current one renumbers every continuation after it. The old
+     * `step` would have selected a resume point belonging to different source — and the task would
+     * have gone on running, at the wrong place, for ever.
+     */
+    const { module, result } = patchWith(
+      versionOf({ fields: [...V1.fields], conts: ['entry', '1'] }),
+    );
+    expect(result.patched).toBe(false);
+    expect((result as { reason: string }).reason).toContain('`signal`');
+    expect((result as { reason: string }).reason).toContain('await');
+    module.scope.leave();
+  });
+
+  it('refuses when either version carries no ABI, rather than guessing', () => {
+    const module = loadModule(versionOf(V1));
+    spawn(module.exports.signal as TaskBody, module.scope);
+    const result = patchModule(module, {
+      __drift: { module: 'm', requires: [], shapes: {} },
+      signal: (versionOf(V1) as { signal: TaskBody }).signal,
+    });
+    expect(result.patched).toBe(false);
+    expect((result as { reason: string }).reason).toContain('Recompile');
+    module.scope.leave();
+  });
+
+  it('rebinds nothing when one of several live tasks is incompatible', () => {
+    /*
+     * Atomicity, which is the property the record path already had and this one did not. A patch
+     * refused on the second task must leave the first exactly as it was — on the version its frame
+     * belongs to, not on a mixture no source file describes.
+     */
+    const before = liveTaskCount();
+    const module = loadModule(versionOf(V1));
+    const first = module.exports.signal as TaskBody;
+    spawn(first, module.scope);
+    spawn(first, module.scope);
+    expect(liveTaskCount() - before).toBe(2);
+
+    const result = patchModule(
+      module,
+      versionOf({ fields: [['$phase', 'string']], conts: [...V1.conts] }),
+    );
+    expect(result.patched).toBe(false);
+
+    /* Both are still running the code their frames belong to. */
+    expect(liveTaskCount() - before).toBe(2);
+    expect(module.exports.signal).toBe(first);
+    module.scope.leave();
+  });
+
+  it('leaves a task whose name is gone on its old code rather than cancelling it', () => {
+    /* Killing live work because a name moved would make renaming a task a scene reset. */
+    const before = liveTaskCount();
+    const module = loadModule(versionOf(V1));
+    spawn(module.exports.signal as TaskBody, module.scope);
+    const result = patchModule(module, {
+      __drift: { module: 'm', requires: [], shapes: {}, tasks: {} },
+    });
+    expect(result).toEqual({ patched: true });
+    expect(liveTaskCount() - before).toBe(1);
+    module.scope.leave();
+  });
+
+  it('says nothing about a task that is not running', () => {
+    /* An ABI change only has to be answered for a frame that exists. A module whose tasks have all
+       finished may be edited freely, which is most edits. */
+    const module = loadModule(versionOf(V1));
+    const result = patchModule(
+      module,
+      versionOf({ fields: [['$phase', 'string']], conts: ['entry'] }),
+    );
+    expect(result).toEqual({ patched: true });
+    module.scope.leave();
   });
 });
