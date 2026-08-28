@@ -26,42 +26,34 @@
  */
 import type { IrComponent, IrEntity, IrPrefab, IrSystem } from '../ir/ir.ts';
 import { schemaOf } from '../schema/schema.ts';
+import type {
+  DriftComponentInfo,
+  DriftEntityInfo,
+  DriftPrefabInfo,
+  DriftSystemInfo,
+} from '../../runtime/module.ts';
 
+/**
+ * What this emits, **named by the types a host reads it back through** rather than restated.
+ *
+ * These were two hand-written descriptions of one JSON object — this one and `DriftModuleInfo`'s —
+ * and they agreed only because neither had moved. The first change to either ended it: 1.8.0 gave a
+ * system its `uses` clauses, added the field here, and left `DriftSystemInfo` alone, so the data
+ * shipped and the type a host consumes it with denied it existed. Nothing failed, because nothing
+ * connected the two. The first host to read the field found it.
+ *
+ * A type-only import, and the direction is the safe one: the compiler already reaches
+ * `runtime/state.ts` for `Schema`, and nothing here reaches back. It erases entirely, so the size
+ * gate sees no runtime code cross.
+ *
+ * `entities` keeps its own name where the emitted key is `entityTypes`, which is `js.ts`'s mapping
+ * and not a second description — it is one rename at one call site, visible in the literal.
+ */
 export interface EntityMetadata {
-  readonly components: readonly {
-    readonly name: string;
-    readonly fromHost: boolean;
-    readonly schema: ReturnType<typeof schemaOf>;
-    readonly editor?: Readonly<Record<string, unknown>>;
-  }[];
-  readonly entities: readonly {
-    readonly name: string;
-    readonly requires: readonly string[];
-    readonly ownComponent: string | null;
-  }[];
-  readonly systems: readonly {
-    readonly name: string;
-    readonly reads: readonly string[];
-    readonly writes: readonly string[];
-    /**
-     * The host values this system asks to be handed, by the type each is.
-     *
-     * **A host reads the type and not the name**: the generated function takes a table keyed by
-     * type, so a host that has a `NavGraph` supplies it once and every system that asked for one
-     * gets it, whatever each file called its binding. Always present, even empty, for the reason
-     * the four lists above are — a system that needs nothing says so rather than being tested for.
-     */
-    readonly uses: readonly { readonly name: string; readonly type: string }[];
-    readonly after: readonly string[];
-    readonly everyTicks: number;
-  }[];
-  readonly prefabs: readonly {
-    readonly name: string;
-    readonly components: readonly {
-      readonly name: string;
-      readonly values: Readonly<Record<string, number | string | boolean>>;
-    }[];
-  }[];
+  readonly components: readonly DriftComponentInfo[];
+  readonly entities: readonly DriftEntityInfo[];
+  readonly systems: readonly DriftSystemInfo[];
+  readonly prefabs: readonly DriftPrefabInfo[];
 }
 
 /**

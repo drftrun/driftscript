@@ -12,6 +12,22 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.8.1
+
+**1.8.0 emitted a field it did not declare, and the first host to read it found out.** A system's
+`uses` clauses reach the generated metadata — that is the whole point of them, since a host has to
+know what to supply — but `DriftSystemInfo`, the type a host reads that metadata back through, never
+gained the field. The data shipped; TypeScript denied it existed; a consumer needed a cast to reach
+what the release was for.
+
+**The fix is that there is one description now instead of two.** `EntityMetadata` restated
+`DriftModuleInfo`'s shapes by hand, and the two agreed only because neither had moved. The compiler's
+half is written in terms of the runtime's types now, so a field added to one is a compile error in
+the other until it is populated. `uses` is optional there, because a module compiled before 1.8.0
+has none and a runtime that threw on one would refuse to load a module that works.
+
+Nothing a script can write changed, and no emitted byte moved.
+
 ## 1.8.0
 
 **A system can be handed something, which is the half of an entity's world a script could not

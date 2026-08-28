@@ -68,6 +68,23 @@ export interface DriftSystemInfo {
   readonly name: string;
   readonly reads: readonly string[];
   readonly writes: readonly string[];
+  /**
+   * The host values this system asks to be handed, from its `uses` clauses.
+   *
+   * **A host reads the type and not the name.** The generated function takes a table keyed by type,
+   * so a host supplies "the `NavGraph` this world has" and never learns what any script called its
+   * binding. Present and empty where a system asks for nothing.
+   *
+   * Optional for the reason `schemas` above is: a module compiled before 1.8.0 has none, and a
+   * runtime that threw on one would refuse to load a module that works perfectly.
+   *
+   * **1.8.0 emitted this field and did not declare it here**, which is what made these two
+   * descriptions one — see `EntityMetadata`, which is now written in terms of these types rather
+   * than restating them. The compiler had grown the field and the type a host reads it through had
+   * not, so the feature was unusable from TypeScript without a cast, and nothing failed. The first
+   * host to try it found it in an afternoon.
+   */
+  readonly uses?: readonly { readonly name: string; readonly type: string }[];
   readonly after: readonly string[];
   readonly everyTicks: number;
 }
