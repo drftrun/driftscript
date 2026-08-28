@@ -12,6 +12,40 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.7.0
+
+**Preparation, so that building a host surface needs no language release.** Three things stood
+between a host and shipping a track it had already designed.
+
+- **The linker asks the registry which modules a host describes**, where it used to consult a
+  hardcoded set of *unshipped* module names — one host's roadmap, inside a package that may not know
+  a host exists, which had to shrink every time that host shipped one. A host could not bind a module
+  until the language cut a release removing the name, and the host's own suite asserted the two
+  lists agreed in both directions.
+- **What replaced it is a catalogue that never shrinks**: every `drift/*` surface the language
+  specifies, built or not. That is language knowledge and always was — `LANGUAGE.md` prints these
+  and the parser knows the prefix — and it keeps the half of the old list that mattered: a script
+  written against a surface nothing implements is told **the module is specified and the file is
+  valid**, rather than reading as though the language were broken. Together the two give three
+  refusals instead of two, and the third is new: **a misspelled module is named as one**, with the
+  near name suggested. It used to be told to add a module that does not exist to a manifest.
+  `UNSHIPPED_MODULES` is replaced by `SPECIFIED_MODULES`.
+- **A capability may name `List<T>`.** A navigation capability answers a path, and a `TypeName`
+  could carry no parameterised form — so a host had the choice of a count-and-index pair of
+  capabilities, or keeping the logic in its own language, which is the thing a script is for.
+  `Result<T, E>` is still refused across the boundary: nothing has asked for one, and a capability
+  that can fail has an option and an effect to say so with.
+- **`behavior.read` and `behavior.write` exist.** `drift/behavior` was the one specified surface
+  with no effect name at all, so a host could not register a capability for it — `defineCapability`
+  requires at least one, and borrowing `ecs.*` would have described a behaviour tick as an entity
+  write. `behavior.read` is inside the determinism boundary; the write is deferred with the other
+  subsystem writes, **and that is not a blocker**: a host ships the track with
+  `deterministic: false` and moving the effect inside is one line on the day somebody can answer for
+  its replay behaviour.
+
+**Nothing a script can write changed.** A `.drs` file that compiled under 1.6.0 compiles under
+1.7.0, to the same JavaScript. What changed is what a *host* may describe, and what a refusal says.
+
 ## 1.6.0
 
 **Four gaps a consumer reported, and two bugs found while closing them.**

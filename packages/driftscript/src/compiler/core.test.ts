@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileDriftScript, singleFileHost} from './index.ts';
+import { createRegistry, defineCapability } from '../registry/capability.ts';
+import { defineTarget } from '../registry/manifest.ts';
 
 /**
  * The strict core, end to end: source in, running JavaScript out.
@@ -863,6 +865,60 @@ describe('a component row as a parameter', () => {
     expect(
       codesOf(`${META}fn f(world: World, e: Entity) -> f64 {\n    return e.Placement\n}\n`),
     ).toContain('DS0248');
+  });
+});
+
+describe('a list a capability handed over', () => {
+  it('walks and measures a path a host returned', async () => {
+    /*
+     * The shape a navigation capability has: a polyline as flat pairs. Until a `TypeName` could
+     * carry `List<T>` the host's only options were a count-and-index pair of capabilities, or
+     * keeping the logic in its own language — which is the thing a script is for.
+     */
+    const registry = createRegistry();
+    registry.addType({ module: 'drift/navigation', name: 'NavMesh', doc: 'A navigation mesh.' });
+    registry.add(
+      defineCapability({
+        module: 'drift/navigation',
+        name: 'path',
+        signature: 'fn(mesh: NavMesh, x: f32, z: f32) -> List<f32>',
+        params: [
+          { name: 'mesh', type: 'NavMesh' },
+          { name: 'x', type: 'f32' },
+          { name: 'z', type: 'f32' },
+        ],
+        returns: 'List<f32>',
+        effects: ['navigation.read'],
+        deterministic: true,
+        doc: 'A polyline, as flat x/z pairs.',
+        implementation: 'Nav.path',
+      }),
+    );
+
+    const result = compileDriftScript(
+      'import { path } from "drift/navigation"\n\n' +
+        'fn legs(mesh: NavMesh, x: f32, z: f32) -> f32 {\n' +
+        '    let points = navigation.path(mesh, x, z)\n' +
+        '    var total = 0\n' +
+        '    for p in points {\n        total += p\n    }\n' +
+        '    return total\n}\n',
+      {
+        filename: 'n.drs',
+        host: singleFileHost(),
+        registry,
+        manifest: defineTarget('t', ['drift/navigation']),
+        mode: 'development',
+      },
+    );
+    expect(result.diagnostics).toEqual([]);
+
+    const mod = (await import(
+      /* @vite-ignore */ `data:text/javascript;base64,${btoa(result.code)}`
+    )) as Record<string, (...args: never[]) => unknown> & {
+      __bind: (host: Record<string, unknown>) => void;
+    };
+    mod.__bind({ 'drift/navigation': { path: () => [1, 2, 3, 4] } });
+    expect(mod.legs({} as never, 0 as never, 0 as never)).toBe(10);
   });
 });
 

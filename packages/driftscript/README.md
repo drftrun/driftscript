@@ -186,6 +186,10 @@ is refused with `f32.nearest` named as the fix.
 `Math.fround` and leaves an `f64` one alone, because only it knows which width the call resolved to.
 `std/math` and `std/time` are written this way and are the worked example.
 
+A parameter or return may also be written `List<T>` — a navigation capability answering a path is
+what that is for. `Result<T, E>` is deliberately not accepted across the boundary: a capability that
+can fail has an option and an effect to say so with.
+
 A `float` return needs at least one `float` parameter, since otherwise nothing could fix the width;
 `defineCapability` refuses that at registration rather than letting every call quietly resolve to
 `f32`.
@@ -240,7 +244,7 @@ language's keywords by reading the lexer. The VSCode client is in the same repos
 
 ## What it costs
 
-432 kB packed, 1.9 MB unpacked, because the tarball carries compiled JavaScript, declarations,
+447 kB packed, 2.0 MB unpacked, because the tarball carries compiled JavaScript, declarations,
 source maps and the source those maps point at. The runtime a browser actually receives is a few
 kilobytes gzipped — the compiler is behind its own entry point and a production bundle drops it.
 

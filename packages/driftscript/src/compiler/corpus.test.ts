@@ -301,19 +301,26 @@ describe('the design corpus', () => {
       expect(result.diagnostics.length).toBeGreaterThan(0);
       /* Only DS03xx. A DS01xx or DS02xx here means the language was trimmed to what shipped. */
       expect(result.diagnostics.every((d) => d.code.startsWith('DS03'))).toBe(true);
-      expect(result.diagnostics.some((d) => /no host provides it yet/.test(d.message))).toBe(true);
+      expect(
+        result.diagnostics.some((d) => /The module is specified and your file is valid/.test(d.message)),
+      ).toBe(true);
     },
   );
 
   it('refuses a wired file too, when the target does not provide its modules', () => {
+    /* **With the registry**, which is what a real build passes and what lets the refusal be the
+       sharp one: this host describes the module and the manifest simply did not ask for it. Without
+       a registry the linker cannot know that and says so instead of guessing, which is the whole
+       reason it takes one. */
     const [, source] = files.find(([name]) => name === 'AudioReactive.drs') as [string, string];
     const result = compileDriftScript(source, {
       filename: 'AudioReactive.drs',
       manifest: BARE,
+      registry: registry(),
       host: singleFileHost(),
       mode: 'development',
     });
     expect(result.diagnostics.every((d) => d.code === 'DS0301')).toBe(true);
-    expect(result.diagnostics.some((d) => d.message.includes('This host provides it'))).toBe(true);
+    expect(result.diagnostics.some((d) => d.message.includes('This host describes it'))).toBe(true);
   });
 });

@@ -34,7 +34,7 @@ release is two publishes in a fixed order.
 ```sh
 npm ci
 npm run build
-npm test                 # the language: 906 tests
+npm test                 # the language: 916 tests
 npm run test:scripts     # the gates: boundaries, versions, sizes, grammar, editors, publish
 npm run typecheck
 npm run publish:check    # the clean room. Ten rows, all of them green, or stop
@@ -58,8 +58,21 @@ One number moves in five places, and the count is asserted rather than remembere
 ```sh
 npm version <new> --workspaces --no-git-tag-version --include-workspace-root
 # then, by hand: the `driftscript` range inside packages/driftscript-language/package.json
-npm install --package-lock-only
+npm install                    # a full install, not --package-lock-only. See below.
+npm run test:scripts           # scripts/workspace.test.mjs is the one that catches this
 ```
+
+**`npm version --workspaces` installs, and it installs in the window where the range is wrong.** It
+moves `version` in every manifest before you have fixed the range that names it, so for that moment
+`driftscript-language` depends on the *previous* version while the workspace copy is the new one —
+npm cannot link the sibling, and does the reasonable thing instead: it fetches the published
+previous release into `packages/driftscript-language/node_modules/`. Fixing the range afterwards
+does not remove it, and `--package-lock-only` writes a lockfile rather than a tree, so the stale copy
+stays.
+
+Everything then passes locally against **the previous release of the compiler**, including the
+agreement test whose whole job is that the server and the build are the same code. It has happened
+twice; the second time `scripts/workspace.test.mjs` named it in seconds.
 
 The lockfile is the one that is invisible locally. Every package here is a workspace link, so a
 range left behind resolves to whatever is on disk and stays green through every command — right up

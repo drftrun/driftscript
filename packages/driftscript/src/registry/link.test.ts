@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { defineTarget } from './manifest.ts';
-import { type LinkResult, linkCapabilities } from './link.ts';
+import { createRegistry, defineCapability } from './capability.ts';
+import { SPECIFIED_MODULES, type LinkResult, linkCapabilities } from './link.ts';
 import { compileDriftScript, singleFileHost } from '../compiler/index.ts';
 
 const spans = new Map([['drift/animation', { start: 7, end: 24 }]]);
@@ -28,6 +29,33 @@ describe('the linker', () => {
     });
   });
 
+/**
+ * A host that describes one module and not the other, which is what tells the two refusals apart.
+ *
+ * Built here rather than hardcoded in the linker, which is the change these tests are about: the
+ * distinction used to come from a `Set` of one host's unshipped track names living inside a package
+ * that may not know a host exists.
+ */
+const describing = (...modules: readonly string[]) => {
+  const r = createRegistry();
+  for (const module of modules) {
+    r.add(
+      defineCapability({
+        module,
+        name: 'probe',
+        signature: 'fn() -> void',
+        params: [],
+        returns: 'void',
+        effects: ['pure'],
+        deterministic: true,
+        doc: 'A capability, so the module is one this host describes.',
+        implementation: `${module}.probe`,
+      }),
+    );
+  }
+  return r;
+};
+
   it('refuses an unprovided module with the module, the target and the reason in words', () => {
     const [diagnostic] = refusalsOf(
       linkCapabilities(['drift/animation'], defineTarget('web-min', []), spans, 'a.drs'),
@@ -39,22 +67,80 @@ describe('the linker', () => {
     expect(diagnostic.start).toBe(7);
   });
 
-  it('says nothing provides a module yet, rather than blaming the language', () => {
+  it('says nothing here implements a module, rather than blaming the language', () => {
+    /* The claim narrowed from "no host provides it" to "nothing this host describes implements it",
+       and the narrower one is the only one knowable: a language cannot speak for hosts it has never
+       been shown. */
     const [diagnostic] = refusalsOf(
-      linkCapabilities(['drift/network'], defineTarget('web-min', []), new Map(), 'a.drs'),
+      linkCapabilities(
+        ['drift/network'],
+        defineTarget('web-min', []),
+        new Map(),
+        'a.drs',
+        new Map(),
+        describing('drift/animation'),
+      ),
     );
-    expect(diagnostic.message).toContain('no host provides it yet');
+    expect(diagnostic.message).toContain('nothing this host describes implements it');
     expect(diagnostic.message).toContain('links when a host implements it');
   });
 
-  it('tells a missing manifest entry apart from a missing provider', () => {
-    const target = defineTarget('web-min', []);
-    const [wired] = refusalsOf(linkCapabilities(['drift/animation'], target, spans, 'a.drs'));
-    const [unwired] = refusalsOf(linkCapabilities(['drift/network'], target, new Map(), 'a.drs'));
+  it('claims neither when no host was configured', () => {
+    /*
+     * The language-server and first-look path. With no registry the linker knows the manifest and
+     * nothing else, so it says only what the manifest says — where the hardcoded list let it assert
+     * "this host provides it" from a name's absence, about a host it had never seen.
+     */
+    const [diagnostic] = refusalsOf(
+      linkCapabilities(['drift/network'], defineTarget('web-min', []), new Map(), 'a.drs'),
+    );
+    expect(diagnostic.message).toContain('drift/network');
+    /* It still says the surface is specified — that is language knowledge and does not need a host
+       — and stops short of claiming anything about who implements it. */
+    expect(diagnostic.message).toContain('The module is specified and your file is valid');
+    expect(diagnostic.message).not.toContain('This host describes it');
+    expect(diagnostic.message).not.toContain('nothing this host describes');
+  });
 
-    expect(wired.message).toContain('This host provides it');
-    expect(unwired.message).not.toContain('This host provides it');
-    expect(unwired.message).toContain('no host provides it yet');
+  it('tells a missing manifest entry apart from a missing provider, from the registry', () => {
+    const target = defineTarget('web-min', []);
+    const registry = describing('drift/animation');
+    const [wired] = refusalsOf(
+      linkCapabilities(['drift/animation'], target, spans, 'a.drs', new Map(), registry),
+    );
+    const [unwired] = refusalsOf(
+      linkCapabilities(['drift/network'], target, new Map(), 'a.drs', new Map(), registry),
+    );
+
+    expect(wired.message).toContain('This host describes it');
+    expect(unwired.message).not.toContain('This host describes it');
+    expect(unwired.message).toContain('nothing this host describes implements it');
+  });
+
+  it('needs no release when a host ships a module, which is the point of asking the registry', () => {
+    /*
+     * **The coupling this removed.** The distinction used to come from a list inside the language,
+     * so a host shipping a track had to wait for a language release before it could bind the module
+     * — and the host's own suite asserted the two lists agreed, in both directions. Registering the
+     * capability is now the whole of it.
+     */
+    const target = defineTarget('web-min', []);
+    const before = refusalsOf(
+      linkCapabilities(['drift/navigation'], target, new Map(), 'a.drs', new Map(), describing()),
+    );
+    expect(before[0].message).toContain('nothing this host describes implements it');
+
+    const after = refusalsOf(
+      linkCapabilities(
+        ['drift/navigation'],
+        target,
+        new Map(),
+        'a.drs',
+        new Map(),
+        describing('drift/navigation'),
+      ),
+    );
+    expect(after[0].message).toContain('This host describes it');
   });
 
   it('reports every unprovided module rather than the first', () => {
@@ -151,7 +237,7 @@ describe('a capability required through an imported file', () => {
     expect(result.diagnostics[0].message).not.toContain('through');
   });
 
-  it('reports an unshipped module reached through an import as unshipped, not as unlisted', () => {
+  it('reports a module reached through an import as specified, not as unlisted', () => {
     /* The two refusals say different things and send a reader to different places. Reaching one
        through an import must not flatten them together. */
     files['/a/ecs.drs'] = 'import { send } from "drift/network"\n\nfn find() {\n    network.send(1)\n}\n';
@@ -164,7 +250,60 @@ describe('a capability required through an imported file', () => {
         manifest: defineTarget('web-min', []),
       },
     );
-    expect(result.diagnostics[0].message).toContain('no host provides it yet');
+    expect(result.diagnostics[0].message).toContain('The module is specified and your file is valid');
     expect(result.diagnostics[0].message).toContain('./ecs');
   });
 });
+
+describe('the catalogue of specified surfaces', () => {
+  it('names the near module when one is misspelled', () => {
+    /*
+     * **New, and it replaces advice that was wrong.** A typo used to fall into "this host provides
+     * it — add it to the target manifest", because the old list held only *unshipped* names and a
+     * misspelling was in neither set. So a reader was told to add a module that does not exist to a
+     * manifest, and the next refusal was the same one.
+     */
+    const [diagnostic] = refusalsOf(
+      linkCapabilities(['drift/nagivation'], defineTarget('web-min', []), new Map(), 'a.drs'),
+    );
+    expect(diagnostic.message).toContain('not a module this language specifies');
+    expect(diagnostic.message).toContain('Did you mean `drift/navigation`?');
+  });
+
+  it('says nothing about a near name when there is none', () => {
+    const [diagnostic] = refusalsOf(
+      linkCapabilities(['drift/madeup'], defineTarget('web-min', []), new Map(), 'a.drs'),
+    );
+    expect(diagnostic.message).toContain('not a module this language specifies');
+    expect(diagnostic.message).not.toContain('Did you mean');
+  });
+
+  it('keeps telling an author that an unbuilt surface is real, which is what it is for', () => {
+    /*
+     * The half worth keeping from the list this replaced. A script may be written against a surface
+     * nothing implements, and the refusal has to say the file is fine — otherwise the language
+     * reads as broken and the author trims their design to what shipped, which is the outcome the
+     * whole linking design exists to prevent.
+     */
+    const [diagnostic] = refusalsOf(
+      linkCapabilities(['drift/behavior'], defineTarget('web-min', []), new Map(), 'a.drs'),
+    );
+    expect(diagnostic.message).toContain('The module is specified and your file is valid');
+  });
+
+  it('lists every surface a host could bind, and never shrinks as one ships', () => {
+    /*
+     * The property that removed the release coupling. The set this replaced held *unshipped* names
+     * and had to lose one every time a host built it — so a host could not bind a module until the
+     * language cut a release, and the host's own suite asserted the two agreed. This one contains
+     * the built and the unbuilt alike, so shipping a track changes nothing here.
+     */
+    for (const shipped of ['drift/ecs', 'drift/audio', 'drift/physics', 'drift/chemistry']) {
+      expect(SPECIFIED_MODULES).toContain(shipped);
+    }
+    for (const unbuilt of ['drift/navigation', 'drift/behavior', 'drift/terrain']) {
+      expect(SPECIFIED_MODULES).toContain(unbuilt);
+    }
+  });
+});
+

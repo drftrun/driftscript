@@ -184,3 +184,67 @@ describe('the determinism boundary', () => {
     ).toThrow(/scene.write/);
   });
 });
+
+describe('a capability naming a list', () => {
+  it('accepts `List<T>` as a parameter and as a return', () => {
+    /*
+     * **Written for a path.** A navigation capability answers a sequence of points, and until 1.7.0
+     * a `TypeName` could carry no parameterised form at all — so a host had the choice of a
+     * count-and-index pair of capabilities or nothing. `Entity?` already worked; `List<T>` did not.
+     */
+    expect(() =>
+      defineCapability({
+        module: 'drift/navigation',
+        name: 'path',
+        signature: 'fn(fromX: f32, fromZ: f32) -> List<f32>',
+        params: [
+          { name: 'fromX', type: 'f32' },
+          { name: 'fromZ', type: 'f32' },
+        ],
+        returns: 'List<f32>',
+        effects: ['navigation.read'],
+        deterministic: true,
+        doc: 'A polyline, as flat x/z pairs.',
+        implementation: 'Nav.path',
+      }),
+    ).not.toThrow();
+  });
+
+  it('lets a behaviour capability say what it touches', () => {
+    /* `drift/behavior` was the one specified surface with no effect name, so a host could not
+       register a capability for it at all — `defineCapability` requires one. */
+    expect(() =>
+      defineCapability({
+        module: 'drift/behavior',
+        name: 'tick',
+        signature: 'fn(agent: Entity) -> void',
+        params: [{ name: 'agent', type: 'Entity' }],
+        returns: 'void',
+        effects: ['behavior.write'],
+        deterministic: false,
+        doc: 'Advance an agent by one decision.',
+        implementation: 'Behaviour.tick',
+      }),
+    ).not.toThrow();
+  });
+
+  it('still refuses a behaviour write that claims to be deterministic', () => {
+    /* The deferral, and it is a deferral rather than a blocker: a host ships the track with
+       `deterministic: false`, and moving the effect inside is one line on the day somebody can
+       answer for its replay behaviour. */
+    expect(() =>
+      defineCapability({
+        module: 'drift/behavior',
+        name: 'tick',
+        signature: 'fn(agent: Entity) -> void',
+        params: [{ name: 'agent', type: 'Entity' }],
+        returns: 'void',
+        effects: ['behavior.write'],
+        deterministic: true,
+        doc: 'Advance an agent by one decision.',
+        implementation: 'Behaviour.tick',
+      }),
+    ).toThrow(/behavior.write/);
+  });
+});
+

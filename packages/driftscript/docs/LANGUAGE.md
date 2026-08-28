@@ -75,8 +75,13 @@ shipped its own would either break that promise or silently become the thing tha
 ### A module you did not provide is refused, not ignored
 
 Importing a module declares a requirement. A target declares what it provides. A requirement the
-target does not satisfy is a **link error with words in it** — it names the module, the target, and
-whether the capability exists in this host at all.
+target does not satisfy is a **link error with words in it**, and there are three of them:
+
+- **This host describes it** — the registry has capabilities for it and the manifest did not ask.
+  Add it to the manifest.
+- **The module is specified and your file is valid** — a surface the language designed that nothing
+  here implements yet. Your file is fine and links when a host builds it.
+- **Not a module this language specifies** — a misspelling, and the refusal names the near one.
 
 A file importing an unprovided module still **parses** and still **type-checks**. Only linking
 declines it. That is what lets one `.drs` file be written against a capability that has not shipped

@@ -2797,6 +2797,22 @@ class Checker {
   private resolveTypeName(name: string, span: Span): Type {
     if (name === 'void') return VOID;
     if (name.endsWith('?')) return option(this.resolveTypeName(name.slice(0, -1), span));
+    /*
+     * `List<T>` in a capability signature, which a host could not write until 1.7.0.
+     *
+     * A `TypeName` is a string and this is the one parameterised form it may carry. **Written for a
+     * path**: a navigation capability answers a sequence of points, and without this a host had the
+     * choice of a count-and-index pair of capabilities or nothing at all. `Result<T, E>` is
+     * deliberately still refused — nothing has asked for one across the boundary, and a capability
+     * that can fail has an option and an effect to say so with.
+     *
+     * Parsed here rather than by handing the string to the type-ref parser, because a registry is
+     * *data*: the name arrives from a JSON file a host generated, and reaching for the parser would
+     * mean a malformed string became a syntax error against a file nobody wrote.
+     */
+    if (name.startsWith('List<') && name.endsWith('>')) {
+      return list(this.resolveTypeName(name.slice(5, -1).trim(), span));
+    }
     /* Through `primitiveType`, so a capability naming `Entity` gets the handle kind that a written
        annotation gets. These two paths disagreed until 1.6.0; see `primitiveType`. */
     if (isPrimitive(name)) return primitiveType(name);

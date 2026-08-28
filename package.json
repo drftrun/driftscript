@@ -1,7 +1,7 @@
 {
   "name": "driftscript-workspace",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "The DriftScript language, its language server, and its editor client",
   "license": "MIT",
   "type": "module",

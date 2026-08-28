@@ -94,7 +94,7 @@ describe('a target manifest decides what links', () => {
       'import { send } from "drift/network"\n\ndata P {\n    a: f32 = 0\n}\n',
       { filename: 'e.drs', manifest: defineTarget('web-full', ['drift/core']), host: singleFileHost(), mode: 'development' },
     );
-    expect(result.diagnostics[0].message).toContain('no host provides it yet');
+    expect(result.diagnostics[0].message).toContain('The module is specified and your file is valid');
     expect(result.diagnostics[0].message).toContain('links when a host implements it');
   });
 });

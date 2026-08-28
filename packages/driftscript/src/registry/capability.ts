@@ -43,6 +43,17 @@ export type Effect =
   | 'chemistry.write'
   | 'navigation.read'
   | 'navigation.write'
+  /*
+   * `drift/behavior`, added 2026-08-28 ahead of its provider.
+   *
+   * It was the one specified surface with no effect name at all, which meant a host could not
+   * register a capability for it: `defineCapability` requires at least one effect, and borrowing
+   * `ecs.*` would have described a behaviour tick as an entity write and made every
+   * `@deterministic` question about it the wrong question. Named now so the track that builds it
+   * does not need a language release first.
+   */
+  | 'behavior.read'
+  | 'behavior.write'
   | 'animation.write'
   | 'audio.write'
   | 'input.read'
@@ -76,9 +87,15 @@ export type Effect =
  * and heating a log is the canonical operation of the package. A rule that refused it to a
  * `@deterministic` function would refuse the thing the annotation exists to describe.
  *
- * `physics.write`, `navigation.write` and `network.write` stay outside, and that is a deferral
- * rather than a judgement: each belongs to a track that has not shipped, and the track that builds
- * one is the one that can say whether its writes are the simulation or a consequence of it.
+ * `physics.write`, `navigation.write`, `behavior.write` and `network.write` stay outside, and that
+ * is a deferral rather than a judgement: each belongs to a track that has not shipped, and the
+ * track that builds one is the one that can say whether its writes are the simulation or a
+ * consequence of it.
+ *
+ * **A deferral is not a blocker**, which is worth saying because it reads like one. A host ships the
+ * track by registering its capabilities with `deterministic: false`; nothing refuses that. What is
+ * deferred is only whether a `@deterministic` script may call one, and moving an effect in here is
+ * a one-line change on the day somebody can answer for its replay behaviour.
  *
  * `clock.read` is absent deliberately. The fixed step's delta is *supplied* to a simulation rather
  * than read by it, so a deterministic function receives time as a parameter — which is exactly how
@@ -93,6 +110,7 @@ export const DETERMINISTIC_EFFECTS: ReadonlySet<Effect> = new Set<Effect>([
   'chemistry.read',
   'chemistry.write',
   'navigation.read',
+  'behavior.read',
   'network.read',
   'persistence.read',
 ]);

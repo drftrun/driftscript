@@ -78,9 +78,10 @@ export type { SourceMap } from './emit/sourceMap.ts';
 /* The modules with no provider anywhere, so a host can assert its own list agrees with this one.
    Two lists of what is missing, maintained separately, is how a project advertises a hole it
    filled. */
-export { UNSHIPPED_MODULES } from '../registry/link.ts';
 
 /** The public name of this entry point, as a consumer's bundler config refers to it. */
+export { SPECIFIED_MODULES } from '../registry/link.ts';
+
 export const COMPILER_ENTRY = 'driftscript/compiler';
 
 export interface CompileOptions {
@@ -389,7 +390,14 @@ export function compileDriftScript(source: string, options: CompileOptions): Com
       if (!spans.has(decl.module)) spans.set(decl.module, decl.span);
     }
 
-    const link = linkCapabilities(ir.requires, options.manifest, spans, filename, imported.through);
+    const link = linkCapabilities(
+      ir.requires,
+      options.manifest,
+      spans,
+      filename,
+      imported.through,
+      options.registry,
+    );
     if (!link.linked) return failed(filename, source, link.diagnostics);
   }
 
