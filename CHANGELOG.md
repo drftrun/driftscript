@@ -192,6 +192,30 @@ generated TextMate grammar.
 `driftscript-vscode` carries its own number because it ships to a different registry on a different
 schedule. It is on the marketplace as `DriftTech.driftscript-vscode`.
 
+### 0.3.0
+
+**The bundled server is a 1.6.0 one, and that is the whole entry.**
+
+The client carries its own copy of the language server, because a marketplace install has no
+`packages/driftscript-language` to walk up to. That copy is frozen at the moment the `.vsix` was
+packed — so 0.2.0 shipped a server built against 1.4.0, and it does not merely lack the new
+features: **it reports valid code as broken.** A file using a module constant, a list and a `break`
+came back with `DS0100 expected a declaration but found \`let\``, `DS0135 expected \`query\``, and
+then `DS0102` at the end of the file, because the parse never recovered. A whole document red, in an
+editor, for code the compiler accepts.
+
+That is the failure this project already refuses in the language server's own design note — a
+squiggle that is sometimes wrong is worse than none — arriving through the packaging rather than
+through the code.
+
+- Module constants appear in the outline as constants, complete as values and colour as variables
+  rather than as types.
+- The server understands everything 1.5.0 and 1.6.0 added: `float` signatures and `nearest`,
+  `List<T>` with its literal, index and walk, `break` and `continue`, module constants, component
+  rows as parameters, and a component reached through a handle.
+- Nothing in the client changed. **The version moves because what it carries did**, which is the
+  cost of bundling a server and the reason this line exists separately from the language's.
+
 ### 0.2.0
 
 **It can be installed by somebody who did not clone the repository**, which it could not before.
