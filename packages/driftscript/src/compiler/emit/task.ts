@@ -51,7 +51,31 @@ export type TaskStmt =
       readonly parent: IrOwner;
       readonly span: Span;
     }
-  | { readonly kind: 'scopeClose'; readonly name: string; readonly span: Span };
+  | { readonly kind: 'scopeClose'; readonly name: string; readonly span: Span }
+  /**
+   * The three pieces a cut `for … in` becomes.
+   *
+   * Here for the reason `scopeOpen` and `scopeClose` are: they are an artefact of cutting a body
+   * into blocks, and a second backend that did not cut would never produce one. Putting them in
+   * `IrStmt` would make every reader of the shared IR handle a case only this file emits.
+   *
+   * They are statements rather than IR expressions because the index is known to be in range —
+   * lowering `listBind` through an `index` node would emit the bounds-checked `$at` helper once
+   * per element, on a walk whose bound is the array's own length.
+   */
+  | {
+      readonly kind: 'listOpen';
+      readonly depth: number;
+      readonly subject: IrExpr;
+      readonly span: Span;
+    }
+  | {
+      readonly kind: 'listBind';
+      readonly depth: number;
+      readonly binding: string;
+      readonly span: Span;
+    }
+  | { readonly kind: 'listStep'; readonly depth: number; readonly span: Span };
 
 /** Where control goes when a block's statements are done. */
 export type Terminator =
@@ -345,6 +369,38 @@ function containsLoopJump(stmts: readonly IrStmt[]): boolean {
 }
 
 /**
+ * `$f.$$n<d> < $f.$$l<d>.length` — the test a cut list loop branches on.
+ *
+ * Built here rather than in the emitter because a terminator carries an `IrExpr`, and the ordinary
+ * expression emitter is what writes it out. Its type is `bool`, so no integer overflow check wraps
+ * the comparison — `emitBinary` only guards a result that is an integer, and this one is not.
+ */
+function listTest(depth: number, span: Span): IrExpr {
+  const { list, index } = listFields(depth);
+  const frame: IrExpr = { kind: 'local', name: '$f', type: { kind: 'void' }, span };
+  return {
+    kind: 'binary',
+    op: '<',
+    left: {
+      kind: 'field',
+      target: frame,
+      name: frameField(index),
+      type: { kind: 'int', name: 'u32' },
+      span,
+    },
+    right: {
+      kind: 'field',
+      target: { kind: 'field', target: frame, name: frameField(list), type: { kind: 'void' }, span },
+      name: 'length',
+      type: { kind: 'int', name: 'u32' },
+      span,
+    },
+    type: { kind: 'bool' },
+    span,
+  };
+}
+
+/**
  * Cut a rewritten body into blocks.
  *
  * The first block is always index 0, which is where `start` leaves the frame pointing.
@@ -356,10 +412,17 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
     return blocks.length - 1;
   };
 
-  /* The cut loops currently open, innermost last. A jump reaching this lowering always belongs to
-     one of them: a jump inside a loop that was *not* cut never gets here, because that loop was
-     pushed into a block whole and this walk does not descend into it. */
-  const loops: { head: number; exit: number }[] = [];
+  /*
+   * The cut loops currently open, innermost last. A jump reaching this lowering always belongs to
+   * one of them: a jump inside a loop that was *not* cut never gets here, because that loop was
+   * pushed into a block whole and this walk does not descend into it.
+   *
+   * `next` is where a `continue` goes and `head` is where the loop re-tests. They are the same
+   * block for a `while`, whose condition is the head — and different for a `for … in`, whose index
+   * has to be advanced first. A `continue` that jumped to the head of a list loop would re-bind the
+   * same element for ever.
+   */
+  const loops: { head: number; next: number; exit: number }[] = [];
 
   const lower = (stmts: readonly IrStmt[], from: number): number => {
     let current = from;
@@ -405,7 +468,7 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
         if (loop !== undefined) {
           blocks[current].terminator = {
             kind: 'jump',
-            target: stmt.word === 'break' ? loop.exit : loop.head,
+            target: stmt.word === 'break' ? loop.exit : loop.next,
           };
           /* Anything after a jump is unreachable, for the reason `return` gives above: appending it
              to a block already terminated would emit it before the jump rather than after. */
@@ -459,9 +522,52 @@ export function blocksOf(body: readonly IrStmt[]): Block[] {
         };
         /* Pushed around the body only. A jump in the *condition* is not expressible, and one in a
            sibling statement belongs to whatever encloses this loop rather than to it. */
-        loops.push({ head, exit });
+        loops.push({ head, next: head, exit });
         blocks[lower(stmt.body, body)].terminator = { kind: 'jump', target: head };
         loops.pop();
+        current = exit;
+        continue;
+      }
+
+      if (stmt.kind === 'forList' && cutsForList(stmt)) {
+        /*
+         * A list walk, cut the way a `while` is, with the two things a `for` keeps that a `while`
+         * does not: the list and the index. Both live on the frame, because the body suspends
+         * between one element and the next and a `const` would not survive the `return`.
+         *
+         * The step block is separate from the body so a `continue` has somewhere to land that
+         * advances the index. Folding the increment into the end of the body would make a
+         * `continue` skip it, and the loop would re-bind the same element until the scene ended.
+         */
+        const head = create();
+        const body = create();
+        const step = create();
+        const exit = create();
+
+        blocks[current].stmts.push({
+          kind: 'listOpen',
+          depth: stmt.depth,
+          subject: stmt.subject,
+          span: stmt.span,
+        });
+        blocks[current].terminator = { kind: 'jump', target: head };
+        blocks[head].terminator = {
+          kind: 'branch',
+          condition: listTest(stmt.depth, stmt.span),
+          then: body,
+          otherwise: exit,
+        };
+        blocks[body].stmts.push({
+          kind: 'listBind',
+          depth: stmt.depth,
+          binding: stmt.binding,
+          span: stmt.span,
+        });
+        loops.push({ head, next: step, exit });
+        blocks[lower(stmt.body, body)].terminator = { kind: 'jump', target: step };
+        loops.pop();
+        blocks[step].stmts.push({ kind: 'listStep', depth: stmt.depth, span: stmt.span });
+        blocks[step].terminator = { kind: 'jump', target: head };
         current = exit;
         continue;
       }

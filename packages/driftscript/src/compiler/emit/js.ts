@@ -43,6 +43,7 @@ import {
   blocksOf,
   frameField,
   frameNames,
+  listFields,
   ownerText,
   rewriteStmts,
 } from './task.ts';
@@ -759,19 +760,45 @@ function emitHandler(writer: Writer, handler: IrHandler): void {
   writer.write('\n');
 }
 
-/** A block's statement: the two the cut introduces, then everything the ordinary emitter handles. */
+/** A block's statement: the five the cut introduces, then everything the ordinary emitter handles. */
 function emitTaskStmt(writer: Writer, stmt: TaskStmt): void {
-  if (stmt.kind === 'scopeOpen') {
-    writer.mark(stmt.span.start);
-    writer.line_(`$f.${frameField(stmt.name)} = $rt.createScope(${ownerText(stmt.parent)});`);
-    return;
+  switch (stmt.kind) {
+    case 'scopeOpen':
+      writer.mark(stmt.span.start);
+      writer.line_(`$f.${frameField(stmt.name)} = $rt.createScope(${ownerText(stmt.parent)});`);
+      return;
+    case 'scopeClose':
+      writer.mark(stmt.span.start);
+      writer.line_(`$f.${frameField(stmt.name)}.leave();`);
+      return;
+    case 'listOpen': {
+      /* The list is read once, into the frame. Re-reading the subject per turn would call whatever
+         produced it again — and a subject that is a capability call would then run per element. */
+      const { list, index } = listFields(stmt.depth);
+      writer.mark(stmt.span.start);
+      writer.line_(`$f.${frameField(list)} = ${emitExprText(stmt.subject)};`);
+      writer.line_(`$f.${frameField(index)} = 0;`);
+      return;
+    }
+    case 'listBind': {
+      /* A bare subscript, not `$at`: the index is this loop's own and the test above it is the
+         array's own length, so there is nothing a bounds check could catch. */
+      const { list, index } = listFields(stmt.depth);
+      writer.mark(stmt.span.start);
+      writer.line_(
+        `$f.${frameField(stmt.binding)} = $f.${frameField(list)}[$f.${frameField(index)}];`,
+      );
+      return;
+    }
+    case 'listStep': {
+      const { index } = listFields(stmt.depth);
+      writer.mark(stmt.span.start);
+      writer.line_(`$f.${frameField(index)} += 1;`);
+      return;
+    }
+    default:
+      emitStmt(writer, stmt);
   }
-  if (stmt.kind === 'scopeClose') {
-    writer.mark(stmt.span.start);
-    writer.line_(`$f.${frameField(stmt.name)}.leave();`);
-    return;
-  }
-  emitStmt(writer, stmt);
 }
 
 function emitTerminator(writer: Writer, terminator: Terminator): void {

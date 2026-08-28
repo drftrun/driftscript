@@ -489,3 +489,160 @@ describe('`break` and `continue` inside a task', () => {
   });
 });
 
+describe('a `for … in` that suspends', () => {
+  /*
+   * **A list loop may now `await`, and before this release it crashed the compiler.**
+   *
+   * `containsAwait` did not descend into `forList`, so the body was never cut, the suspend reached
+   * the ordinary statement emitter, and the compiler threw a bare internal `Error` — at a program
+   * that is the obvious way to write "do this to each of them, a beat apart".
+   *
+   * The loop's list and index live on the frame for the same reason every other task local does:
+   * the body returns between one element and the next, and a `const` would not survive it.
+   */
+  it('walks one element per resume, keeping its place across the suspension', async () => {
+    const module = await load(
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task each(xs: List<f32>) {\n' +
+        '    for x in xs {\n' +
+        '        events.mark(x)\n' +
+        '        await fixedTime(500ms)\n' +
+        '    }\n' +
+        '    events.mark(99)\n' +
+        '}\n',
+    );
+
+    const marks = bind(module);
+
+    spawn(module.exports.each as TaskBody, module.scope, [1, 2, 3]);
+    expect(marks).toEqual([1]);
+
+    steps = 30;
+    tickTasks();
+    expect(marks).toEqual([1, 2]);
+
+    steps = 60;
+    tickTasks();
+    expect(marks).toEqual([1, 2, 3]);
+
+    steps = 90;
+    tickTasks();
+    expect(marks).toEqual([1, 2, 3, 99]);
+    expect(liveTaskCount()).toBe(0);
+
+    module.scope.leave();
+  });
+
+  it('reads the subject once, not once per element', () => {
+    /* A subject that is a call would otherwise run per turn. It is read into the frame at the
+       point the loop opens, which is also what makes the walk stable if the list is replaced. */
+    const code = compile(
+      'task each(xs: List<f32>) {\n' +
+        '    for x in xs {\n' +
+        '        await fixedTime(1s)\n' +
+        '    }\n' +
+        '}\n',
+    );
+    /* Once in the loop's own opening statement. `start` also names the field, initialising it to
+       `undefined` the way it does every frame local, which is not a read of the subject. */
+    expect(code.match(/\$f\.\$\$l0 = \$f\.\$xs;/g)).toHaveLength(1);
+  });
+
+  it('sends a `continue` to the increment, not to the head', async () => {
+    /*
+     * The failure this guards against is silent and total: a `continue` that jumped to the head
+     * would re-bind the same element for ever, and a task in that state is alive, resuming, and
+     * making no progress.
+     */
+    const module = await load(
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task each(xs: List<f32>) {\n' +
+        '    for x in xs {\n' +
+        '        await fixedTime(500ms)\n' +
+        '        if x > 1 {\n' +
+        '            continue\n' +
+        '        }\n' +
+        '        events.mark(x)\n' +
+        '    }\n' +
+        '    events.mark(99)\n' +
+        '}\n',
+    );
+
+    const marks = bind(module);
+    spawn(module.exports.each as TaskBody, module.scope, [1, 2]);
+
+    steps = 30;
+    tickTasks();
+    expect(marks).toEqual([1]);
+
+    steps = 60;
+    tickTasks();
+    expect(marks).toEqual([1, 99]);
+    expect(liveTaskCount()).toBe(0);
+
+    module.scope.leave();
+  });
+
+  it('sends a `break` past the rest of the list', async () => {
+    const module = await load(
+      'import { mark } from "drift/events"\n' +
+        '\n' +
+        'task each(xs: List<f32>) {\n' +
+        '    for x in xs {\n' +
+        '        await fixedTime(500ms)\n' +
+        '        if x > 1 {\n' +
+        '            break\n' +
+        '        }\n' +
+        '        events.mark(x)\n' +
+        '    }\n' +
+        '    events.mark(99)\n' +
+        '}\n',
+    );
+
+    const marks = bind(module);
+    spawn(module.exports.each as TaskBody, module.scope, [1, 2, 3]);
+
+    steps = 30;
+    tickTasks();
+    expect(marks).toEqual([1]);
+
+    steps = 60;
+    tickTasks();
+    expect(marks).toEqual([1, 99]);
+
+    module.scope.leave();
+  });
+
+  it('is left as an ordinary JavaScript loop when nothing in it suspends', () => {
+    /* The rule the whole file follows: only control flow containing an `await` is cut, because
+       splitting the rest would buy nothing and cost every reader of the output. */
+    const code = compile(
+      'task each(xs: List<f32>) {\n' +
+        '    for x in xs {\n' +
+        '        let y = x + 1\n' +
+        '    }\n' +
+        '    await fixedTime(1s)\n' +
+        '}\n',
+    );
+    expect(code).toContain('for (let $n0 = 0;');
+    expect(code).not.toContain('$f.$$n0');
+  });
+
+  it('still refuses an `await` in a query loop, however deeply the loop is nested', () => {
+    const { diagnostics } = compileDriftScript(
+      'component Meta { x: f64 = 0 }\n' +
+        '\n' +
+        'task each(world: World, xs: List<f32>) {\n' +
+        '    for e in query<Meta>() {\n' +
+        '        for x in xs {\n' +
+        '            await fixedTime(1s)\n' +
+        '        }\n' +
+        '    }\n' +
+        '}\n',
+      { filename: 't.drs', host: singleFileHost(), registry: registry(), mode: 'development' },
+    );
+    expect(diagnostics.map((d) => d.code)).toContain('DS0289');
+  });
+});

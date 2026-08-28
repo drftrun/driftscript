@@ -30,6 +30,7 @@ import type {
   ConstDecl,
   ParamDecl,
 } from '../ast.ts';
+import { visitStmts } from '../astWalk.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
 import { FLOAT, type CapabilityRegistry } from '../../registry/capability.ts';
 import { isPrimitive } from '../tokens.ts';
@@ -1273,33 +1274,23 @@ class Checker {
    * statements would pass an `await` one `if` deep, which is where one would actually be written.
    */
   private refuseSuspension(body: readonly Stmt[]): void {
-    for (const stmt of body) {
-      switch (stmt.kind) {
-        case 'await':
-        case 'awaitTask':
-          this.report(
-            'DS0289',
-            'a query loop may not `await`. Its cursor comes from a pool and is given back when the ' +
-              'loop ends, and a suspension holds one across a frame — where the entity model ' +
-              'already says the result is invalid, because the array it walks has been rewritten ' +
-              'by every system that ran since. Collect what you need, end the loop, then await.',
-            stmt.span,
-          );
-          break;
-        case 'if':
-        case 'ifLet':
-          this.refuseSuspension(stmt.then);
-          if (stmt.otherwise != null) this.refuseSuspension(stmt.otherwise);
-          break;
-        case 'while':
-        case 'scope':
-        case 'forQuery':
-          this.refuseSuspension(stmt.body);
-          break;
-        default:
-          break;
-      }
-    }
+    /*
+     * **Every statement at every depth, through `astWalk.ts`.** The hand-written version named five
+     * kinds and fell through the rest, so an `await` inside a `for … in` nested in a query loop was
+     * accepted — and a list loop is exactly where somebody would write one, since a list loop *may*
+     * suspend everywhere else.
+     */
+    visitStmts(body, (stmt) => {
+      if (stmt.kind !== 'await' && stmt.kind !== 'awaitTask') return;
+      this.report(
+        'DS0289',
+        'a query loop may not `await`. Its cursor comes from a pool and is given back when the ' +
+          'loop ends, and a suspension holds one across a frame — where the entity model ' +
+          'already says the result is invalid, because the array it walks has been rewritten ' +
+          'by every system that ran since. Collect what you need, end the loop, then await.',
+        stmt.span,
+      );
+    });
   }
 
   /**
