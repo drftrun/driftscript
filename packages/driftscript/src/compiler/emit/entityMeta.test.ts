@@ -48,6 +48,10 @@ const compile = (mode: 'development' | 'production', source = SOURCE): string =>
     mode,
     manifest: { name: 'test', provides: ['drift/ecs'] },
     host: singleFileHost(),
+    /* This suite is about what the *metadata* carries in each mode, and it describes no host — so
+       it says the build is deliberately unverified rather than being refused for it. That refusal
+       is the point of the option, and `index.test.ts` is where it is asserted. */
+    verification: 'none',
   });
   const errors = result.diagnostics.filter((d) => d.severity === 'error');
   if (errors.length > 0) {

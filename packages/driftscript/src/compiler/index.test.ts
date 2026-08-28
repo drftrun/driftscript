@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileDriftScript, singleFileHost} from './index.ts';
+import { type CompileOptions, compileDriftScript, singleFileHost } from './index.ts';
 import { createRegistry, defineCapability } from '../registry/capability.ts';
 
 const PULSE =
@@ -221,5 +221,135 @@ describe('the interface hash across modules', () => {
     }).metadata.interfaceHash;
     expect(alone).toMatch(/^[0-9a-f]{8}$/);
     expect(alone).not.toBe('');
+  });
+});
+
+describe('a production build has something to verify against', () => {
+  /*
+   * **The easiest production integration used to be one with both guarantees quietly off.**
+   * `manifest` and `registry` were optional in every mode: without a manifest nothing links and no
+   * missing capability is refused, without a registry no effect is inferred and `@deterministic` is
+   * a claim nothing checked. A `.drs` file saying `@deterministic` looked identical either way, and
+   * so did the build.
+   *
+   * Development stays permissive, because an editor open on a file with no project configured is a
+   * real state rather than a misconfiguration, and refusing to start would show nothing where it
+   * could show most of the errors.
+   */
+  const build = (overrides: Partial<CompileOptions>) =>
+    compileDriftScript('fn f() -> f32 {\n    return 1\n}\n', {
+      filename: 'p.drs',
+      host: singleFileHost(),
+      mode: 'production',
+      ...overrides,
+    });
+
+  const manifest = { name: 'test', provides: [] };
+
+  it('compiles when given both', () => {
+    expect(build({ manifest, registry: createRegistry() }).diagnostics).toEqual([]);
+  });
+
+  it('refuses without a manifest, naming what it does not have', () => {
+    expect(() => build({ registry: createRegistry() })).toThrow(/`manifest`/);
+  });
+
+  it('refuses without a registry', () => {
+    expect(() => build({ manifest })).toThrow(/`registry`/);
+  });
+
+  it('names both when both are missing, and the way out in the same sentence', () => {
+    expect(() => build({})).toThrow(/`manifest` and no `registry`/);
+    expect(() => build({})).toThrow(/verification: 'none'/);
+  });
+
+  it('builds unverified when a caller says so in a word nobody sets by accident', () => {
+    expect(build({ verification: 'none' }).diagnostics).toEqual([]);
+  });
+
+  it('leaves development alone', () => {
+    const result = compileDriftScript('fn f() -> f32 {\n    return 1\n}\n', {
+      filename: 'p.drs',
+      host: singleFileHost(),
+      mode: 'development',
+    });
+    expect(result.diagnostics).toEqual([]);
+  });
+});
+
+describe('the fixed simulation step belongs to the target', () => {
+  /*
+   * It was a constant in the parser, whose own comment named what would make that wrong: a host
+   * running a different one. A parser answers what the author wrote; how many fixed steps a second
+   * holds is a property of the host's loop, and `update at 1Hz` cannot be turned into a stride
+   * without it.
+   */
+  const SOURCE = 'system Tick {\n    update at 1Hz { }\n}\n';
+
+  const strideAt = (fixedStepsPerSecond?: number): number => {
+    const result = compileDriftScript(SOURCE, {
+      filename: 's.drs',
+      host: singleFileHost(),
+      mode: 'development',
+      fixedStepsPerSecond,
+    });
+    expect(result.diagnostics).toEqual([]);
+    /* Read off the emitted metadata, which is what a host schedules from. */
+    const found = /"everyTicks":(\d+)/.exec(result.code);
+    return found === null ? -1 : Number(found[1]);
+  };
+
+  it.each([
+    [undefined, 60],
+    [60, 60],
+    [30, 30],
+    [120, 120],
+  ])('compiles `at 1Hz` against %s steps a second as a stride of %d', (steps, stride) => {
+    expect(strideAt(steps)).toBe(stride);
+  });
+
+  it('records what the strides were computed against, so a cached module can be told apart', () => {
+    const result = compileDriftScript(SOURCE, {
+      filename: 's.drs',
+      host: singleFileHost(),
+      mode: 'development',
+      fixedStepsPerSecond: 30,
+    });
+    expect(result.code).toContain('"fixedStepsPerSecond":30');
+  });
+
+  it('names this target when a rate does not divide its step, not sixty', () => {
+    const result = compileDriftScript('system Tick {\n    update at 4Hz { }\n}\n', {
+      filename: 's.drs',
+      host: singleFileHost(),
+      mode: 'development',
+      fixedStepsPerSecond: 30,
+    });
+    const message = result.diagnostics.map((d) => d.message).join('\n');
+    expect(result.diagnostics.map((d) => d.code)).toContain('DS0133');
+    expect(message).toContain('1/30');
+    /* The list of ways out is this target's divisors, not the ones that happen to divide sixty. */
+    expect(message).toContain('1, 2, 3, 5, 6, 10, 15, 30Hz');
+  });
+
+  it('accepts a rate that divides this target and not the default', () => {
+    const result = compileDriftScript('system Tick {\n    update at 8Hz { }\n}\n', {
+      filename: 's.drs',
+      host: singleFileHost(),
+      mode: 'development',
+      fixedStepsPerSecond: 120,
+    });
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('refuses a step that is not a whole number of steps a second', () => {
+    expect(() =>
+      compileDriftScript(SOURCE, {
+        filename: 's.drs',
+        host: singleFileHost(),
+        mode: 'development',
+        fixedStepsPerSecond: 59.94,
+      }),
+    ).toThrow(/whole number/);
   });
 });

@@ -62,6 +62,18 @@ export interface DriftModuleInfo {
    * except patching a live task. `patchModule` refuses the *patch* instead, naming the task.
    */
   readonly tasks?: Readonly<Record<string, TaskAbi>>;
+  /**
+   * The fixed simulation step, as steps per second, that this module's strides were computed
+   * against.
+   *
+   * A system's `everyTicks` is a count of fixed steps, so it only means anything beside the number
+   * of steps a second holds. A module cached at thirty and loaded by a host running at sixty
+   * schedules every `update at …Hz` twice as often as it asked for, and until this was recorded
+   * there was nothing in the output to compare.
+   *
+   * Optional for the reason `schemas` is: a module compiled by an earlier version has none.
+   */
+  readonly fixedStepsPerSecond?: number;
 }
 
 /** A component a module declares, or asserts about its host. */

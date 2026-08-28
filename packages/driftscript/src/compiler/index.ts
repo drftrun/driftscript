@@ -132,6 +132,38 @@ export interface CompileOptions {
    * about what a program does.
    */
   readonly mode: 'development' | 'production';
+  /**
+   * Whether this build is allowed to skip capability linking and effect verification.
+   *
+   * **`mode: 'production'` requires a `manifest` and a `registry` unless this says otherwise**, and
+   * that is the whole of the option. Without a manifest nothing links and nothing is refused;
+   * without a registry no effect is inferred and `@deterministic` is a claim nothing checked — and
+   * both were optional in every mode, so the easiest way to ship a build was one that had quietly
+   * turned off the two guarantees a host buys this language for. A `.drs` file saying
+   * `@deterministic` looked exactly the same either way.
+   *
+   * Development stays permissive and unchanged: a language server open on a file with no project
+   * configured has to report the errors it can see rather than refusing to start, and that is a
+   * real state rather than a misconfiguration.
+   *
+   * Named for what it does. A host that genuinely wants an unverified production build — a
+   * playground, a syntax-only bundle — says so in a word nobody sets by accident, and the refusal
+   * names this option so the way out is in the error.
+   */
+  readonly verification?: 'checked' | 'none';
+  /**
+   * This target's fixed simulation step, as steps per second. Defaults to 60.
+   *
+   * `update at 1Hz` is a *stride* by the time a backend sees it — how many fixed steps to skip —
+   * and the number of steps in a second is what turns one into the other. It lived in the parser as
+   * a constant, whose own comment said what would make that wrong: a host running a different fixed
+   * step. That host compiles rates wrongly, silently, and there is nothing in the output to point
+   * at afterwards.
+   *
+   * It reaches the module's metadata as well as the strides, so a module cached at 30 and loaded by
+   * a host running at 60 can be told apart from one built for it.
+   */
+  readonly fixedStepsPerSecond?: number;
 }
 
 export interface DriftModuleMetadata {
@@ -252,14 +284,53 @@ const failed = (
  * after a syntax error is worth drawing conclusions from, and this parser's recovery is
  * deliberately blunt for the same reason.
  */
+/**
+ * A production build that has nothing to verify against, refused before it produces anything.
+ *
+ * **Thrown rather than reported as a diagnostic**, and the distinction is who made the mistake. A
+ * diagnostic is addressed to whoever wrote the `.drs` file and points at a span in it; this is a
+ * host author's build configuration, there is no span, and the script is blameless. The build
+ * process is where a person is watching, which is `AGENTS.md`'s rule about failing fast at init
+ * read from the compiler's side.
+ */
+function refuseImpossibleStep(options: CompileOptions): void {
+  const step = options.fixedStepsPerSecond;
+  if (step === undefined) return;
+  if (Number.isInteger(step) && step > 0) return;
+  throw new Error(
+    `\`fixedStepsPerSecond\` is how many fixed simulation steps a second holds, so it has to be a ` +
+      `whole number above zero, and this is \`${step}\`. Every \`update at …Hz\` in every module ` +
+      'compiled against this target divides it.',
+  );
+}
+
+function refuseUnverifiedProduction(options: CompileOptions): void {
+  if (options.mode !== 'production' || options.verification === 'none') return;
+
+  const missing = [
+    options.manifest === undefined ? '`manifest`' : null,
+    options.registry === undefined ? '`registry`' : null,
+  ].filter((name): name is string => name !== null);
+  if (missing.length === 0) return;
+
+  throw new Error(
+    `a production build of \`${options.filename}\` was given no ${missing.join(' and no ')}. ` +
+      'Without a manifest nothing links and no missing capability is refused; without a registry ' +
+      'no effect is inferred and `@deterministic` is a claim nothing checked. Pass them, or pass ' +
+      "`verification: 'none'` to say that this build is deliberately unverified.",
+  );
+}
+
 export function compileDriftScript(source: string, options: CompileOptions): CompileResult {
   const { filename } = options;
+  refuseImpossibleStep(options);
+  refuseUnverifiedProduction(options);
 
   /* Warnings from every stage travel with a successful compile, so a file that compiles *and* has
      something to say still says it. Dropping them on success is the mirror of stopping on them. */
   const warnings: Diagnostic[] = [];
 
-  const parsed = parse(source, filename);
+  const parsed = parse(source, filename, options.fixedStepsPerSecond);
   if (stops(parsed.diagnostics)) return failed(filename, source, parsed.diagnostics);
   warnings.push(...parsed.diagnostics);
 
@@ -401,7 +472,12 @@ export function compileDriftScript(source: string, options: CompileOptions): Com
     if (!link.linked) return failed(filename, source, link.diagnostics);
   }
 
-  const emitted = emitJs(ir, { filename, source, mode: options.mode });
+  const emitted = emitJs(ir, {
+    filename,
+    source,
+    mode: options.mode,
+    fixedStepsPerSecond: options.fixedStepsPerSecond,
+  });
 
   return {
     code: emitted.code,

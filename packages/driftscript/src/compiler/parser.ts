@@ -47,24 +47,14 @@ import type {
 import type { Diagnostic, DiagnosticCode } from './diagnostics.ts';
 import { type Token, tokenize } from './lexer.ts';
 import { isPrimitive, isSoftKeyword } from './tokens.ts';
+import { DEFAULT_FIXED_STEPS_PER_SECOND, ratesDividing } from './target.ts';
 
 export interface ParseResult {
   readonly module: Module;
   readonly diagnostics: readonly Diagnostic[];
 }
 
-/**
- * The simulation's fixed step, as steps per second.
- *
- * A constant here rather than an option, because it is a contract rather than a setting: the engine
- * advances simulation only in fixed 1/60 steps, and a language that let a script disagree would be
- * a language whose `at 1Hz` meant something different per host.
- *
- * **What this costs** is that a host running a different fixed step compiles rates wrongly. **What
- * would make it wrong** is exactly that host, at which point the step becomes a compile option and
- * every stride in every cached module has to be rebuilt with it.
- */
-const FIXED_STEPS_PER_SECOND = 60;
+
 
 /** Keywords that can begin a top-level declaration, which is where recovery resynchronises. */
 const DECL_STARTS: ReadonlySet<string> = new Set([
@@ -122,6 +112,7 @@ class Parser {
   private readonly diagnostics: Diagnostic[] = [];
   private readonly file: string;
   private readonly source: string;
+  private readonly fixedStepsPerSecond: number;
   private at = 0;
 
   constructor(
@@ -129,9 +120,11 @@ class Parser {
     source: string,
     tokens: readonly Token[],
     lexDiagnostics: readonly Diagnostic[],
+    fixedStepsPerSecond: number = DEFAULT_FIXED_STEPS_PER_SECOND,
   ) {
     this.file = file;
     this.source = source;
+    this.fixedStepsPerSecond = fixedStepsPerSecond;
     /* Comments are dropped here rather than in the lexer, because the formatter and the language
        server both want them and both read the token stream rather than the tree. */
     this.tokens = tokens.filter((t) => t.kind !== 'comment');
@@ -752,13 +745,14 @@ class Parser {
     this.next();
 
     const rate = Number(value.text);
-    const stride = FIXED_STEPS_PER_SECOND / rate;
+    const perSecond = this.fixedStepsPerSecond;
+    const stride = perSecond / rate;
     if (!Number.isFinite(stride) || stride <= 0 || !Number.isInteger(stride)) {
       this.report(
         'DS0133',
-        `\`${value.text}Hz\` is ${(FIXED_STEPS_PER_SECOND / rate).toFixed(2)} fixed steps, which is ` +
-          `not a whole stride. The fixed step is 1/${FIXED_STEPS_PER_SECOND}, so a rate has to ` +
-          'divide it exactly: 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60Hz.',
+        `\`${value.text}Hz\` is ${stride.toFixed(2)} fixed steps, which is not a whole stride. ` +
+          `This target's fixed step is 1/${perSecond}, so a rate has to divide it exactly: ` +
+          `${ratesDividing(perSecond).join(', ')}Hz.`,
         { start: value.start, end: unit.end },
       );
       return null;
@@ -2352,9 +2346,14 @@ class Parser {
   }
 }
 
-export function parse(source: string, file: string): ParseResult {
+export function parse(
+  source: string,
+  file: string,
+  /** This target's fixed simulation step, as steps per second. See the constant above. */
+  fixedStepsPerSecond: number = DEFAULT_FIXED_STEPS_PER_SECOND,
+): ParseResult {
   const { tokens, diagnostics } = tokenize(source, file);
-  const parser = new Parser(file, source, tokens, diagnostics);
+  const parser = new Parser(file, source, tokens, diagnostics, fixedStepsPerSecond);
   return parser.result(parser.parseModule());
 }
 

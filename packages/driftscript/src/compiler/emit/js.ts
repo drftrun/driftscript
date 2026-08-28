@@ -23,6 +23,7 @@ import type {
   IrType,
 } from '../ir/ir.ts';
 import { INTEGER_RANGE, integerDomain } from '../check/types.ts';
+import { DEFAULT_FIXED_STEPS_PER_SECOND } from '../target.ts';
 import { schemaOf } from '../schema/schema.ts';
 import { anyExprIn, anyStmt } from '../ir/walk.ts';
 import { SYSTEM_VIEW } from '../check/checker.ts';
@@ -61,6 +62,14 @@ export interface EmitOptions {
    * silently shipping without it — a missing inspector is visible, a missing *build flag* is not.
    */
   readonly mode?: 'development' | 'production';
+  /**
+   * The target's fixed step this module's strides were computed against.
+   *
+   * Recorded in `__drift` rather than only used: a module cached at 30 steps a second and loaded by
+   * a host running at 60 schedules every `update at …Hz` twice as often, and without the number in
+   * the output there is nothing to compare.
+   */
+  readonly fixedStepsPerSecond?: number;
 }
 
 export interface EmitResult {
@@ -1168,6 +1177,8 @@ export function emitJs(ir: IrModule, options: EmitOptions): EmitResult {
        * has to read nothing and call nothing.
        */
       tasks: taskAbis(ir),
+      /* What `everyTicks` above is measured in. See `EmitOptions`. */
+      fixedStepsPerSecond: options.fixedStepsPerSecond ?? DEFAULT_FIXED_STEPS_PER_SECOND,
       /* Whether the host must call `__bind` before anything else in this module works. A runtime
          that guessed by looking for the export would be guessing; this says so. */
       binds: ir.namespaces.length > 0,

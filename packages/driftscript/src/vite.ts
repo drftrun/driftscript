@@ -142,6 +142,25 @@ export interface DriftScriptPluginOptions {
    */
   readonly capabilities?: string | SerializedRegistry;
   readonly mode?: CompileOptions['mode'];
+  /**
+   * Whether a `mode: 'production'` build may run without a manifest and a registry.
+   *
+   * **A production build is refused without both unless this is `'none'`.** This plugin is the
+   * easiest way to ship a DriftScript build, and both options above it were optional — so the
+   * shortest working config was one with capability linking and effect verification quietly off,
+   * producing a bundle in which `@deterministic` had been checked by nothing. Development is
+   * unaffected.
+   */
+  readonly verification?: CompileOptions['verification'];
+  /**
+   * This target's fixed simulation step, as steps per second. Defaults to 60.
+   *
+   * `update at 1Hz` becomes a stride — a count of fixed steps — and this is what turns one into the
+   * other. A host whose loop runs at a different rate has to say so, or every rate in every module
+   * is compiled for somebody else's clock. The value it was built with rides in the module's
+   * metadata.
+   */
+  readonly fixedStepsPerSecond?: CompileOptions['fixedStepsPerSecond'];
 }
 
 /**
@@ -258,6 +277,8 @@ export function driftScript(options: DriftScriptPluginOptions = {}): DriftScript
       registry,
       host: filesystemHost(),
       mode: options.mode ?? 'development',
+      verification: options.verification,
+      fixedStepsPerSecond: options.fixedStepsPerSecond,
     });
 
     compiled.set(id, { source, result });
