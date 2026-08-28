@@ -141,6 +141,26 @@ And update anything that consumes the language from the registry rather than fro
 A different registry, a different identity, and its own version number. It is not part of the npm
 release and does not have to happen at the same time.
 
+### When it has to be re-cut, and when it does not
+
+The client **bundles its own server**, frozen at the moment the `.vsix` was packed, because a
+marketplace install has no `packages/driftscript-language` to walk up to. So the question is never
+"did the language release" — it is **what would a bundled server of that vintage say about code
+somebody can write today**. Two cases, and they are not the same urgency:
+
+- **It cannot parse the syntax.** Re-cut now. This is what 1.6.0 did: module constants, lists,
+  `break` and `continue` made a 1.4.0-era server report `DS0100`/`DS0135`/`DS0102` and never
+  recover, so a whole valid document went red. A squiggle that is sometimes wrong is worse than
+  none, and this is the packaging producing exactly that.
+- **It cannot type something a host describes.** Re-cut when the host ships it, not when the
+  language does. 1.7.0 let a capability name `List<T>`, and a 1.6.0 server answers
+  `DS0237 \`List<f32>\` is not a type this host registered` — but only against a registry that has
+  one, and until a host registers such a capability there is nothing to be wrong about. Every 1.7.0
+  *script* form compiles clean on the 0.3.0 server, which was checked rather than assumed.
+
+The cheap test for either is the one used both times: install the version the published `.vsix`
+bundles into an empty project, and run the code in question through it.
+
 ```sh
 npm run vsix                                    # builds and packages, into editors/vscode/
 code --install-extension editors/vscode/*.vsix  # what a marketplace install would be
