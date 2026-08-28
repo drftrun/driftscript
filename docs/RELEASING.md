@@ -62,6 +62,13 @@ npm install                    # a full install, not --package-lock-only. See be
 npm run test:scripts           # scripts/workspace.test.mjs is the one that catches this
 ```
 
+**`npm version --workspaces` also moves the editor client, which is not on this line.** It walks
+every workspace member, so `editors/vscode/package.json` comes back bumped to the language's number
+— and it rewrites that file's escaped characters while it is there, so the diff is larger than the
+one line it looks like. Check the file out again and set its own number by hand. Nothing ships wrong
+if this is missed: `scripts/version.test.mjs` asserts the client is *not* on the shared line, and
+that is the test that catches it.
+
 **`npm version --workspaces` installs, and it installs in the window where the range is wrong.** It
 moves `version` in every manifest before you have fixed the range that names it, so for that moment
 `driftscript-language` depends on the *previous* version while the workspace copy is the new one —
