@@ -330,6 +330,37 @@ declared — the signature is where a reader and the inference both learn it.
 name to: `let m = e.Placement` and returning one are both errors. Read a field from it, or pass it to a
 function that takes a row.
 
+### A component you query is a component you declare
+
+A system's `reads` and `writes` are an assertion about what its body touches, and **naming a
+component in a query counts**: a host is handed every component the query narrows by, and a host
+that derives its schedule from these declarations refuses a query naming one the system did not
+declare.
+
+```drs
+system Walk {
+    reads Gait
+    writes Placement
+
+    update {
+        for e in query<Gait, Placement>().without<Still>() {
+            e.Placement.x = e.Placement.x + 1
+        }
+    }
+}
+```
+
+`Gait` is declared although no field of it is read: the loop narrows by it, so the host is told about
+it. `Still` is not declared, and must not be — an exclusion never looks inside the component, and an
+entity it matched is not in the result at all. `.with<T>()` narrows the same way the type arguments
+do, so it counts like them.
+
+**This was wrong in this compiler until 2026-08-28**, and it was wrong in the direction that costs
+most: the analysis walked a loop's body and not its terms, so `DS0291` called the declaration a host
+demanded unused, and a module written on that advice compiled clean and threw once a tick inside the
+host's schedule. Reported from outside by somebody who found it from play, as a *different* system
+stuttering. `DS0288` refuses the omission now, which is where a compiler should meet it.
+
 ### What a system is handed
 
 A system takes no arguments, so `uses` is how it receives anything the host owns:

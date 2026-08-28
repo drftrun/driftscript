@@ -1025,3 +1025,141 @@ describe('a handle a host hands back', () => {
     expect(errorsWithRegistry(source).map((e) => e.code)).toContain('DS0203');
   });
 });
+
+/**
+ * **Reported from outside 2026-08-28: the compiler and a host's runtime gave opposite instructions
+ * about the same line.**
+ *
+ * A component named in `query<…>` is one the host's runtime treats as read — the engine that
+ * reported this refuses the query unless the component is in `reads` or `writes`, because a
+ * schedule derived from declarations is wrong the moment a system touches more than it says. This
+ * analysis walked a loop's *body* and never its *terms*, so the declaration the runtime demanded
+ * was one nothing here counted: `DS0291` fired on it as unused, and following that advice produced
+ * a module that compiled clean and threw once a tick.
+ *
+ * Two diagnostics change direction together, which is why the pair is tested as a pair: `DS0291`
+ * stops calling a query's declaration unused, and `DS0288` starts catching the omission the runtime
+ * used to catch — at compile time, where nobody is watching a car move in jerks.
+ *
+ * **A `without` term is not a read**, and that is the host's rule rather than a simplification: an
+ * exclusion never looks inside the component, and an entity a `without` matched is not in the
+ * result at all.
+ */
+describe('what a query loop counts as read', () => {
+  it('counts a queried component as read, so its declaration is not called unused', () => {
+    /* `Gait` is only ever queried — no field of it is touched — which is exactly the shape that
+       used to be warned about. */
+    const all = allIn(`
+component Gait { phase: f64 = 0 }
+component Health { current: f64 = 0 }
+
+system Walker {
+    reads Gait
+    writes Health
+    update { for e in query<Gait, Health>() { e.Health.current = 1 } }
+}
+`);
+    expect(all.filter((d) => d.code === 'DS0291')).toEqual([]);
+    expect(all.filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('and refuses the omission the runtime would have thrown on', () => {
+    const errors = errorsIn(`
+component Gait { phase: f64 = 0 }
+component Health { current: f64 = 0 }
+
+system Walker {
+    writes Health
+    update { for e in query<Gait, Health>() { e.Health.current = 1 } }
+}
+`);
+    expect(errors[0]?.code).toBe('DS0288');
+    expect(errors[0]?.message).toContain('Gait');
+  });
+
+  it('counts a `with` term too, because it reaches the same host call', () => {
+    const all = allIn(`
+component Gait { phase: f64 = 0 }
+component Grounded { on: bool = true }
+
+system Walker {
+    writes Gait
+    reads Grounded
+    update { for e in query<Gait>().with<Grounded>() { e.Gait.phase = 0 } }
+}
+`);
+    expect(all.filter((d) => d.code === 'DS0291')).toEqual([]);
+    expect(all.filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('does not count a `without` term, so declaring one is still called unused', () => {
+    const all = allIn(`
+component Gait { phase: f64 = 0 }
+component Still { held: bool = true }
+
+system Walker {
+    writes Gait
+    reads Still
+    update { for e in query<Gait>().without<Still>() { e.Gait.phase = 0 } }
+}
+`);
+    const warnings = all.filter((d) => d.code === 'DS0291');
+    expect(warnings[0]?.message).toContain('Still');
+    expect(all.filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('and does not demand a declaration for one either', () => {
+    expect(
+      allIn(`
+component Gait { phase: f64 = 0 }
+component Still { held: bool = true }
+
+system Walker {
+    writes Gait
+    update { for e in query<Gait>().without<Still>() { e.Gait.phase = 0 } }
+}
+`).filter((d) => d.severity === 'error'),
+    ).toEqual([]);
+  });
+
+  /**
+   * An `entity` term stands for its own component and everything it requires, and the runtime is
+   * handed every one of them — so all of them are read, not just the name written in the source.
+   */
+  it('expands an entity term, because the host is handed what the entity requires', () => {
+    const all = allIn(`
+component Gait { phase: f64 = 0 }
+component Health { current: f64 = 0 }
+
+entity Walker {
+    require Gait
+    require Health
+}
+
+system Mover {
+    writes Gait
+    reads Health
+    update { for e in query<Walker>() { e.Gait.phase = 0 } }
+}
+`);
+    expect(all.filter((d) => d.code === 'DS0291')).toEqual([]);
+    expect(all.filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('counts a query inside a helper the system calls', () => {
+    const all = allIn(`
+component Gait { phase: f64 = 0 }
+
+fn walk(world: World) {
+    for e in query<Gait>() { e.Gait.phase = 0 }
+}
+
+system Walker {
+    writes Gait
+    update { walk(world) }
+}
+`);
+    expect(all.filter((d) => d.severity === 'error')).toEqual([]);
+    expect(all.filter((d) => d.code === 'DS0291')).toEqual([]);
+  });
+});

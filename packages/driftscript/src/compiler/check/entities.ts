@@ -32,6 +32,7 @@ import type {
   Span,
   Stmt,
   SystemDecl,
+  TypeRef,
 } from '../ast.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
 import type { Type } from './types.ts';
@@ -385,7 +386,44 @@ function directAccess(
         fromExpr(stmt.condition);
         stmt.body.forEach(fromStmt);
         return;
-      case 'forQuery':
+      case 'forQuery': {
+        /*
+         * **A component a query narrows by is read, and this walk skipped the terms until
+         * 2026-08-28.**
+         *
+         * It walked a loop's *body* and never its own `query<…>`, so a component that appears in a
+         * query and nowhere else was invisible here — and a host's runtime does not agree. The
+         * engine that reported this refuses `query` unless every component in it is declared,
+         * because a schedule derived from declarations is wrong the moment a system touches more
+         * than it says. So the declaration the host demanded was one `DS0291` called unused, and
+         * following that advice produced a module that compiled clean, passed every check the
+         * reporter had, and threw once per tick from inside the schedule — taking every system
+         * after it down with it, and presenting as a *different* system stuttering.
+         *
+         * Two diagnostics changed direction with this. `DS0291` stops calling a query's own
+         * declaration unused, and `DS0288` starts refusing the omission at compile time, which is
+         * where the reporter had wanted it.
+         *
+         * **A `without` term is not counted, and that is the host's rule rather than a
+         * convenience.** An exclusion never looks inside the component, and an entity a `without`
+         * matched is not in the result at all — which is why `checker.ts` also keeps those out of
+         * the loop's readable set and why the generated code passes them to a separate host call.
+         * `with` *is* counted: it reaches the same `query` call the required terms do.
+         */
+        const named = (ref: TypeRef): string => (ref.kind === 'option' ? '' : ref.name);
+        const excluded = new Set(
+          requiredComponents(stmt.query.without.map(named), model).names,
+        );
+        const narrowing = requiredComponents(
+          [...stmt.query.required, ...stmt.query.with].map(named),
+          model,
+        ).names;
+        /* An unknown term is dropped rather than guessed at: `checker.ts` reports it as DS0286,
+           and this analysis has no span to point at. */
+        for (const component of narrowing) if (!excluded.has(component)) reads.add(component);
+        stmt.body.forEach(fromStmt);
+        return;
+      }
       case 'scope':
         stmt.body.forEach(fromStmt);
         return;

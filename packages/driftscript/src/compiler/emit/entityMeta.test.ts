@@ -20,6 +20,13 @@ prefab Guard {
 }
 
 system Feeder {
+    /*
+     * \`reads Animal\` is not decoration: \`query<Animal>()\` hands a host every component the entity
+     * stands for, its own implicit one included, and a host refuses a query naming a component the
+     * system did not declare. This fixture had only \`writes Hunger\` until 2026-08-28, which is to
+     * say it was a module that compiled here and threw in a host.
+     */
+    reads Animal
     writes Hunger
     after Movement
 
@@ -85,7 +92,9 @@ describe('the metadata a host builds a world from', () => {
     const systems = placement.systems as { name: string; reads: string[]; writes: string[] }[];
     const feeder = systems.find((s) => s.name === 'Feeder');
     expect(feeder?.writes).toEqual(['Hunger']);
-    expect(feeder?.reads).toEqual(['Hunger']);
+    /* Both, and `Animal` is there because the loop queries it: a host is handed every component an
+       entity term stands for and refuses a query naming one the system did not declare. */
+    expect(feeder?.reads).toEqual(['Hunger', 'Animal']);
   });
 
   it('carries a declared component the compiler could not infer', () => {

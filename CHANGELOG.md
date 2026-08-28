@@ -12,6 +12,36 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.9.0
+
+**The compiler and a host's runtime gave opposite instructions about the same line, and this one
+followed the compiler.** A component named in `query<…>` is a component a host is handed: the engine
+that reported this refuses a query unless every component in it is declared in `reads` or `writes`,
+because a schedule derived from declarations is wrong the moment a system touches more than it says.
+The access analysis here walked a loop's *body* and never its *terms*, so a component that appears
+in a query and nowhere else was invisible to it — and `DS0291` called the declaration the host
+demanded unused.
+
+**Following that advice produced a module that compiled clean and threw once a tick.** It was found
+from play rather than from a check: the throw lands inside the host's schedule, so every system
+after it stops, and what the reporter saw was a *different* system stuttering — a vehicle moving in
+jerks — with the only evidence in a browser console no headless gate reads.
+
+Two diagnostics change direction together. `DS0291` no longer calls a query's own declaration
+unused, and **`DS0288` now refuses the omission**, which moves the failure from once-per-tick at
+runtime to once at compile time. A `with` term counts, because it reaches the same host call; a
+`without` term does not, because an exclusion never looks inside a component and an entity it
+matched is not in the result at all. An `entity` term expands to everything it stands for, its own
+implicit component included, since that is what the host is handed.
+
+**A minor rather than a patch, because a build that was green can go red.** A module querying a
+component it never declared is refused now. That module was already broken — it would have thrown in
+any host that checks — but the day it starts failing is a day a consumer can name.
+
+This repository's own fixture was one of them: `entityMeta.test.ts` compiled a system that queried
+an entity and declared only one of its components, which is to say it had been asserting the shape
+of metadata for a module that could not run.
+
 ## 1.8.1
 
 **1.8.0 emitted a field it did not declare, and the first host to read it found out.** A system's

@@ -1,6 +1,6 @@
 {
   "name": "driftscript",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "description": "A strict, deterministic-aware, hot-reloadable scripting language. Host-neutral: it knows types, effects and capabilities, and never a scene, a mesh or a mix bus",
   "license": "MIT",
   "author": "Drift Technologies",
