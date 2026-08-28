@@ -39,6 +39,8 @@ import {
   ERROR,
   FLOATS,
   INTEGERS,
+  integerDomain,
+  wrapsExactly,
   STRING,
   type Type,
   VOID,
@@ -2106,6 +2108,7 @@ class Checker {
           expected.kind === 'primitive' &&
           (INTEGERS.has(expected.name) || expected.name === 'f64')
         ) {
+          if (INTEGERS.has(expected.name)) this.refuseUnrepresentable(expr.value, expected.name, expr.span);
           return this.record(expr, expected);
         }
         return this.record(expr, primitive('f32'));
@@ -2296,6 +2299,27 @@ class Checker {
       }
 
       case 'unary': {
+        /*
+         * `-1` is a unary node over a literal, and the sign has to be applied **before** the range
+         * is checked or the check is about the wrong number. Both directions were wrong: `u8 = -1`
+         * passed, because `1` fits a `u8`; `i8 = -128` was refused, because `128` does not.
+         *
+         * Handled here rather than by a folding pass, because this is the only place the sign and
+         * the expectation are both in hand — and folding arbitrary arithmetic would be a constant
+         * evaluator, which is a much larger promise than a literal's own value.
+         */
+        if (
+          expr.op === '-' &&
+          expr.operand.kind === 'number' &&
+          expected !== undefined &&
+          expected.kind === 'primitive' &&
+          INTEGERS.has(expected.name)
+        ) {
+          this.refuseUnrepresentable(-expr.operand.value, expected.name, expr.span);
+          this.record(expr.operand, expected);
+          return this.record(expr, expected);
+        }
+
         const operand = this.checkExpr(expr.operand, scope, expected);
         if (operand.kind === 'error') return this.record(expr, ERROR);
         if (expr.op === '!') {
@@ -2504,6 +2528,10 @@ class Checker {
         );
         return ERROR;
       }
+      if (expr.op.endsWith('%') && left.kind === 'primitive' && !wrapsExactly(left.name)) {
+        this.report('DS0221', unwrappable(expr.op, left.name), expr.span);
+        return ERROR;
+      }
     }
 
     if (['<', '<=', '>', '>='].includes(expr.op)) return BOOL;
@@ -2661,6 +2689,44 @@ class Checker {
    * and wanted its square root could not say so — and `DS0232` told it, in words, that no
    * conversion existed.
    */
+  /**
+   * A literal the type it is being given cannot hold.
+   *
+   * **Nothing checked this before**, at any width: `let n: u8 = 300` compiled, and the 300 went
+   * into a `Uint8Array` column as 44. A literal is the one value whose fit is knowable at compile
+   * time, so it is the one place a range error costs nothing to catch — and the language's own rule
+   * is that there is no undefined integer behaviour.
+   *
+   * The 64-bit types get a different sentence because the reason is different. `300` does not fit
+   * in a `u8` because a `u8` is eight bits; `9007199254740993` does not fit in a `u64` because a
+   * JavaScript number cannot represent it — the type is wide enough and the backend is not. Saying
+   * so is the difference between a reader fixing the number and a reader fixing the type.
+   */
+  private refuseUnrepresentable(value: number, target: string, span: Span): void {
+    if (!Number.isInteger(value)) {
+      this.report(
+        'DS0222',
+        `\`${target}\` holds whole numbers and this is \`${value}\``,
+        span,
+      );
+      return;
+    }
+
+    const domain = integerDomain(target);
+    if (value >= domain.lo && value <= domain.hi) return;
+
+    this.report(
+      'DS0222',
+      domain.exact
+        ? `\`${value}\` is outside \`${target}\`, which holds ${domain.lo} to ${domain.hi}`
+        : `\`${value}\` is outside what \`${target}\` can hold on this backend, which is ` +
+            `${domain.lo} to ${domain.hi}. The type is sixty-four bits wide and a JavaScript ` +
+            'number is a double, so every integer past 2^53 - 1 is either unrepresentable or ' +
+            'stands for several — a range this language will not pretend to have.',
+      span,
+    );
+  }
+
   private checkConversion(
     target: string,
     method: string,
@@ -2678,6 +2744,12 @@ class Checker {
           'integers and `nearest` is for floats',
         expr.span,
       );
+      for (const arg of expr.args) this.checkExpr(arg, scope);
+      return ERROR;
+    }
+
+    if (isInteger && method === 'wrap' && !wrapsExactly(target)) {
+      this.report('DS0221', unwrappable(`${target}.wrap`, target), expr.span);
       for (const arg of expr.args) this.checkExpr(arg, scope);
       return ERROR;
     }
@@ -3315,6 +3387,23 @@ class Checker {
     this.report('DS0204', `\`${ref.name}\` is not a type this module declares or imports`, ref.span);
     return ERROR;
   }
+}
+
+/**
+ * Why wrapping is refused for a width this backend cannot wrap exactly.
+ *
+ * One sentence for both spellings — `a +% b` and `u64.wrap(v)` — because it is one fact, and a
+ * consumer who reads it once should not have to read a second version of it.
+ */
+function unwrappable(spelling: string, target: string): string {
+  return (
+    `\`${spelling}\` cannot be exact for \`${target}\` on this backend. Wrapping is defined on ` +
+    'the true result before it is reduced, and two values near the top of this type add to almost ' +
+    '2^54 — where a JavaScript number is a double and the sum has already been rounded before ' +
+    'anything could reduce it. Checked arithmetic and `clamp` are unaffected: both only have to be ' +
+    'exact inside the range, and a result outside it throws or clamps. Use `i32`/`u32` for wrapping ' +
+    'arithmetic, or `clamp` if saturating is what was meant.'
+  );
 }
 
 export function check(

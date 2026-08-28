@@ -138,6 +138,17 @@ That is the whole primitive set. **`Vec3`, `Quat`, `Mat4`, `Transform` and `Colo
 types** — they arrive through a linked capability, from whatever maths the host provides. A consumer
 with no renderer still has a language.
 
+**`i64` and `u64` name sixty-four bits of storage and hold fifty-three bits of value.** The
+JavaScript backend represents every number as an IEEE-754 double, which is exact for every integer
+up to `2^53 - 1` and for none above it — `9007199254740993` is not a value a double has. So the two
+widest types run `-(2^53 - 1) … 2^53 - 1` and `0 … 2^53 - 1`, the compiler refuses a literal outside
+that, and arithmetic that would leave it fails or saturates like any other overflow. The nominal
+width still means what it says everywhere the value is *stored* — a component column, a schema, a
+save file — which is why the types exist rather than being removed.
+
+One operation cannot be given honest semantics at that width and is refused by name: see
+[Integers and overflow](#integers-and-overflow).
+
 Three parameterised types are built in — `T?`, `Result<T, E>` and `List<T>` — and all three are
 described below. You cannot declare your own generic type.
 
@@ -193,6 +204,9 @@ u8.wrap(v)         // the low bits
 f32.nearest(v)     // the nearest f32, which is what rounds an f64 down to single precision
 f64.nearest(v)     // the nearest f64, which for an f32 is that value exactly
 ```
+
+`i64.wrap` and `u64.wrap` do not exist, for the reason
+[Integers and overflow](#integers-and-overflow) gives. `checked` and `clamp` do.
 
 `nearest` is what IEEE does in both directions and there is nothing else a float conversion could
 have meant, so offering `checked`, `clamp` and `wrap` here would be offering two things that do not
@@ -589,6 +603,22 @@ fn clamp(a: u8, b: u8) -> u8 {
 The wrapping and saturating spellings need an integer. `a +% b` on `f32` is an error rather than a
 synonym for `+`, because floats neither wrap nor saturate and accepting it would teach that the
 distinction is decorative.
+
+**Wrapping is refused on `i64` and `u64`.** Wrapping is defined on the true result before it is
+reduced into the type. Every narrower width can compute that result exactly first — two `u32`s add
+to at most `2^33 - 2`, which a double holds — and then reduce it. Two values near the top of the
+64-bit range add to almost `2^54`, where doubles are two apart, so the sum has already been rounded
+before anything could reduce it, and no order of operations recovers it. `a +% b` and `u64.wrap(v)`
+are therefore errors naming the type rather than operations that are wrapping-shaped and wrong.
+
+Checked and saturating arithmetic are unaffected at every width, including those two. Both only have
+to be exact *inside* the range: a result outside it throws or clamps, and neither answer depends on
+bits the backend could not hold.
+
+**A literal is checked against its type.** `let n: u8 = 300` is an error, and so is
+`let n: u64 = 9007199254740993` — the first because eight bits do not hold 300, the second because a
+double does not hold that number at all. The diagnostics say which of the two it is, because the
+fixes are different.
 
 `f32` arithmetic rounds at each operation, which is what single precision means — the same
 expression gives the same answer here as in a shader.

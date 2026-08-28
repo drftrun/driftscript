@@ -185,6 +185,73 @@ export const INTEGER_RANGE: Readonly<Record<string, { bits: number; signed: bool
   u64: { bits: 64, signed: false },
 };
 
+/**
+ * The largest integer a JavaScript number holds exactly: `2^53 - 1`.
+ *
+ * Written as the expression rather than the digits, because the digits are the thing a reader
+ * cannot check.
+ */
+const EXACT = 2 ** 53 - 1;
+
+/**
+ * The values of an integer type this backend can actually represent, and whether that is all of
+ * them.
+ *
+ * ---
+ *
+ * **`i64` and `u64` name sixty-four bits of storage and cannot hold sixty-four bits of value here.**
+ * A JavaScript number is an IEEE-754 double: every integer up to `2^53 - 1` is exact and beyond
+ * that they are not — `9007199254740993` is not representable at all, and the arithmetic above the
+ * boundary skips values rather than approximating them. A range check cannot repair a number whose
+ * low bits are already gone.
+ *
+ * The nominal width still means something, and that is why the types stay. A component column
+ * declared `i64` is a `Float64Array` on the engine's side, a schema records the width a save file
+ * reserves, and a host reading the metadata is told what it is being handed. What changes is that
+ * the *language* now refuses to produce a value it cannot represent, instead of producing a wrong
+ * one: the domain below is what `+`, `-`, `*`, `.checked` and `.clamp` are held to.
+ *
+ * **`BigInt` was the other answer and is wrong for this language.** A BigInt allocates per
+ * operation, so `@hot` would have to reject all 64-bit arithmetic — the type would be unusable on
+ * exactly the per-frame path this language exists for — and it would fork the capability ABI, the
+ * schemas, state serialisation and every `JSON.stringify` in the metadata. **What would make this
+ * paragraph wrong** is a backend whose numbers are not doubles, at which point the domain stops
+ * being a property of the type and moves behind the backend that knows.
+ */
+export function integerDomain(name: string): { lo: number; hi: number; exact: boolean } {
+  const range = INTEGER_RANGE[name];
+  if (range === undefined) return { lo: 0, hi: 0, exact: false };
+
+  const lo = range.signed ? -(2 ** (range.bits - 1)) : 0;
+  const hi = range.signed ? 2 ** (range.bits - 1) - 1 : 2 ** range.bits - 1;
+  if (hi <= EXACT && lo >= -EXACT - 1) return { lo, hi, exact: true };
+
+  /*
+   * Symmetric, so that negating a value in the domain stays in it. A two's-complement `-2^53` would
+   * be one more value at the bottom and `-(-2^53)` would then be an overflow — a rule about
+   * representability turning into a rule about sign, for one number nobody asked for.
+   */
+  return { lo: range.signed ? -EXACT : 0, hi: EXACT, exact: false };
+}
+
+/**
+ * Whether wrapping arithmetic is expressible for this type on this backend.
+ *
+ * **It is not, for the 64-bit types, and refusing is the only honest answer.** Wrapping is defined
+ * on the true mathematical result: `a +% b` is the sum reduced into the domain. Every other integer
+ * width can compute that sum exactly first — two `u32`s add to at most `2^33 - 2`, which a double
+ * holds — and then reduce it. Two values at the top of the 64-bit exact domain add to nearly
+ * `2^54`, where doubles are two apart and an odd sum has already been rounded before anything can
+ * reduce it. There is no order of operations that recovers it.
+ *
+ * So `+%`, `-%`, `*%` and `.wrap` are refused on `i64` and `u64` by name, rather than computing
+ * something that is wrapping-shaped and wrong. Checked and saturating arithmetic are unaffected:
+ * both only need to be exact *inside* the domain, and a result outside it either throws or clamps.
+ */
+export function wrapsExactly(name: string): boolean {
+  return integerDomain(name).exact;
+}
+
 export function isNumeric(type: Type): boolean {
   return type.kind === 'primitive' && NUMERIC.has(type.name);
 }

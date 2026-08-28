@@ -22,7 +22,7 @@ import type {
   IrTask,
   IrType,
 } from '../ir/ir.ts';
-import { INTEGER_RANGE } from '../check/types.ts';
+import { INTEGER_RANGE, integerDomain } from '../check/types.ts';
 import { schemaOf } from '../schema/schema.ts';
 import { anyExprIn, anyStmt } from '../ir/walk.ts';
 import { SYSTEM_VIEW } from '../check/checker.ts';
@@ -294,9 +294,18 @@ function conversionCall(expr: Extract<IrExpr, { kind: 'call' }>): string | null 
   if (range === undefined) return null;
 
   const value = emitExprText(expr.args[0]);
-  const bounds = `${range.bits}, ${range.signed}`;
+  /*
+   * The bounds are **literals**, not a width the helper raises two to.
+   *
+   * `$chk(v, 32, true)` computed `2 ** 31` twice per call, on a path integer arithmetic puts inside
+   * a frame loop. It also could not express the one thing this release needed it to: an `i64` whose
+   * representable domain is not `2 ** 63`. Passing the two numbers says what is meant and costs
+   * nothing to read.
+   */
+  const { lo, hi } = integerDomain(owner);
+  const bounds = `${lo}, ${hi}`;
   if (method === 'clamp') return `$sat(${value}, ${bounds})`;
-  if (method === 'wrap') return `$wrap(${value}, ${bounds})`;
+  if (method === 'wrap') return `$wrap(${value}, ${lo}, ${hi - lo + 1})`;
   if (method === 'checked') return `$fit(${value}, ${bounds})`;
   return null;
 }
@@ -315,12 +324,18 @@ function emitBinary(expr: Extract<IrExpr, { kind: 'binary' }>): string {
    * it is the one place generated code is deliberately slower than the JavaScript a person would
    * have written. `+%` and `+|` are the opt-outs, and `@hot` is where the cost gets measured.
    */
-  if (range !== undefined) {
+  if (range !== undefined && expr.type.kind === 'int') {
+    const { lo, hi } = integerDomain(expr.type.name);
+    const bounds = `${lo}, ${hi}`;
     const base = expr.op[0];
-    if (expr.op.endsWith('%')) return `$wrap(${left} ${base} ${right}, ${range.bits}, ${range.signed})`;
-    if (expr.op.endsWith('|')) return `$sat(${left} ${base} ${right}, ${range.bits}, ${range.signed})`;
+    if (expr.op.endsWith('%')) {
+      /* Only reachable for a width whose wrapping is expressible — the checker refuses `+%` on the
+         64-bit types, where the true sum is already rounded before anything could reduce it. */
+      return `$wrap(${left} ${base} ${right}, ${lo}, ${hi - lo + 1})`;
+    }
+    if (expr.op.endsWith('|')) return `$sat(${left} ${base} ${right}, ${bounds})`;
     if (['+', '-', '*', '/', '%'].includes(expr.op)) {
-      return `$chk(${left} ${expr.op} ${right}, ${range.bits}, ${range.signed})`;
+      return `$chk(${left} ${expr.op} ${right}, ${bounds})`;
     }
   }
 
@@ -915,27 +930,27 @@ const HELPERS: Readonly<Record<string, string>> = {
   }
   return list[index];
 }`,
-  $chk: `function $chk(v, bits, signed) {
-  const lo = signed ? -(2 ** (bits - 1)) : 0;
-  const hi = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;
+  /*
+   * The bounds arrive as literals the compiler worked out, rather than as a width to raise two to.
+   *
+   * Two reasons, and the second is why it changed. Raising two to a power twice per integer
+   * operation is work on a path a script runs per frame; and the bounds of an `i64` here are not
+   * `2 ** 63`, because a double cannot hold one — see `integerDomain`.
+   */
+  $chk: `function $chk(v, lo, hi) {
   const t = Math.trunc(v);
   if (t < lo || t > hi) throw new RangeError('integer overflow: ' + v);
   return t;
 }`,
-  $wrap: `function $wrap(v, bits, signed) {
-  const span = 2 ** bits;
-  let t = Math.trunc(v) % span;
+  $wrap: `function $wrap(v, lo, span) {
+  let t = (Math.trunc(v) - lo) % span;
   if (t < 0) t += span;
-  return signed && t >= span / 2 ? t - span : t;
+  return t + lo;
 }`,
-  $sat: `function $sat(v, bits, signed) {
-  const lo = signed ? -(2 ** (bits - 1)) : 0;
-  const hi = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;
+  $sat: `function $sat(v, lo, hi) {
   return Math.min(hi, Math.max(lo, Math.trunc(v)));
 }`,
-  $fit: `function $fit(v, bits, signed) {
-  const lo = signed ? -(2 ** (bits - 1)) : 0;
-  const hi = signed ? 2 ** (bits - 1) - 1 : 2 ** bits - 1;
+  $fit: `function $fit(v, lo, hi) {
   const t = Math.trunc(v);
   return t < lo || t > hi ? { tag: 'none' } : { tag: 'some', value: t };
 }`,
