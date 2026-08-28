@@ -47,11 +47,17 @@ component Brain {
     watching: Entity?
 }
 
-// **Everything is `f64`, and that is forced rather than chosen.** An entity handle spends the whole
-// 53-bit budget a double holds, so a component field holding one is `Entity` and arithmetic over
-// positions is `f64`. This language has no implicit widening, so a helper taking `f32` would be a
-// compile error at every call — and that refusal is the feature working: an `f32` holding a handle
-// would silently truncate its generation.
+// **A handle is `Entity` and a position is `f64`, and neither is a choice.** A handle spends the
+// whole 53-bit budget a double holds, so anything narrower truncates its generation — and a
+// truncated generation is a stale handle that compares equal to a live one, which is the exact
+// failure the generation exists to prevent. Positions are `f64` for the same width reason. This
+// language has no implicit widening, so a helper taking `f32` would be a compile error at every
+// call, and that refusal is the feature working.
+//
+// **`self` below was `f64` until the capabilities could say `Entity`.** A handle is assignable *to*
+// an `f64` and not from one, so the moment `drift/ecs` named the type, a handle held in an `f64`
+// stopped being passable back — which is the point rather than a cost: a number a script computed
+// is not a handle, and it used to be able to pretend it was.
 //
 // **That forcing is what found the hole `std/math` had until 1.5.0.** Every maths signature was
 // written `f32`, which is the width a literal takes and the width an engine's own maths computes
@@ -125,7 +131,7 @@ system Senses {
 // **The loop and the `await` are deliberately not nested.** A query loop may not suspend: its
 // cursor comes from a pool and is given back when the loop ends, and holding one across a frame
 // would walk an array every system since had rewritten. So the task waits, then queries.
-task patrol(world: World, self: f64) {
+task patrol(world: World, self: Entity) {
     while ecs.alive(world, self) {
         await fixedTime(2s)
         for e in query<Brain>() {
