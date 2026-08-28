@@ -33,6 +33,7 @@
  */
 import type { Span } from '../ast.ts';
 import type { IrExpr, IrOwner, IrStmt, IrTask } from '../ir/ir.ts';
+import { anyStmt, visitStmts } from '../ir/walk.ts';
 
 /**
  * A statement inside a block, which is the language's own plus two the cut introduces.
@@ -103,62 +104,71 @@ export function frameField(name: string): string {
   return `$${name}`;
 }
 
-/** Whether any statement in this list, at any depth, suspends. */
+/**
+ * Whether any statement in this list, at any depth, suspends.
+ *
+ * **The descent comes from `ir/walk.ts`.** It used to name four statement kinds and fall through a
+ * permissive `default`, which meant an `await` inside a `for … in` was invisible to the cutter —
+ * the body was never cut, the suspend reached the ordinary statement emitter, and the compiler
+ * threw a bare internal `Error` at a program that is perfectly reasonable to write.
+ */
 export function containsAwait(stmts: readonly IrStmt[]): boolean {
-  for (const stmt of stmts) {
-    switch (stmt.kind) {
-      case 'await':
-      case 'awaitTask':
-        return true;
-      case 'if':
-      case 'ifLet':
-        if (containsAwait(stmt.then)) return true;
-        if (stmt.otherwise !== null && containsAwait(stmt.otherwise)) return true;
-        break;
-      case 'while':
-      case 'scope':
-        if (containsAwait(stmt.body)) return true;
-        break;
-      default:
-        break;
-    }
-  }
-  return false;
+  return anyStmt(stmts, (stmt) => stmt.kind === 'await' || stmt.kind === 'awaitTask');
 }
 
-/** Every name a task binds: its parameters, then every `let` at any depth. */
+/**
+ * Whether this `for … in` has to become blocks rather than a JavaScript loop.
+ *
+ * **One predicate, read by both the cutter and `frameNames`.** They have to agree exactly: a loop
+ * that is cut keeps its binding on the frame, and one that is not keeps it in a `const` the
+ * JavaScript loop declares. Two copies of the rule would disagree the first time either moved, and
+ * the failure is a binding written to one place and read from the other — which is the shape of
+ * three of the miscompiles this release fixes.
+ */
+export function cutsForList(stmt: Extract<IrStmt, { kind: 'forList' }>): boolean {
+  return containsAwait(stmt.body);
+}
+
+/** The frame fields a cut `for … in` keeps its position in: the list it walks, and the index. */
+export function listFields(depth: number): { list: string; index: string } {
+  return { list: `$l${depth}`, index: `$n${depth}` };
+}
+
+/**
+ * Every name a task binds: its parameters, then every `let` at any depth.
+ *
+ * The walk used to stop at a `for` loop, so a `let` written inside one was rewritten into a frame
+ * *write* while every read of it stayed a bare identifier — a `ReferenceError` on the first
+ * iteration, from code that compiled without a diagnostic.
+ */
 export function frameNames(task: IrTask): string[] {
   const names = task.params.map((p) => p.name);
-  const walk = (stmts: readonly IrStmt[]): void => {
-    for (const stmt of stmts) {
-      switch (stmt.kind) {
-        case 'let':
-          names.push(stmt.name);
-          break;
-        case 'if':
-        case 'ifLet':
-          walk(stmt.then);
-          if (stmt.otherwise !== null) walk(stmt.otherwise);
-          break;
-        case 'while':
-          walk(stmt.body);
-          break;
-        case 'scope':
-          /* A scope's handle lives on the frame like any other binding: the block it belongs to can
-             span a suspend, and a scope that died at one would leave its tasks unowned. */
-          names.push(stmt.name);
-          walk(stmt.body);
-          break;
-        default:
-          break;
-      }
+  visitStmts(task.body, (stmt) => {
+    if (stmt.kind === 'let') names.push(stmt.name);
+    /* A scope's handle lives on the frame like any other binding: the block it belongs to can span
+       a suspend, and a scope that died at one would leave its tasks unowned. */
+    if (stmt.kind === 'scope') names.push(stmt.name);
+    if (stmt.kind === 'forList' && cutsForList(stmt)) {
+      /* A cut loop's binding survives the suspension in its body, and so must the two temporaries
+         that say where the walk had got to. They are named `$l`/`$n` so `frameField` prefixes them
+         into `$$l0`/`$$n0`, which no source identifier can collide with — a `$` cannot start one. */
+      const { list, index } = listFields(stmt.depth);
+      names.push(stmt.binding, list, index);
     }
-  };
-  walk(task.body);
+  });
   return names;
 }
 
-/** Rewrite every reference to a task binding into a read of the frame field that holds it. */
+/**
+ * Rewrite every reference to a task binding into a read of the frame field that holds it.
+ *
+ * **Exhaustive, and it cannot borrow `ir/walk.ts` for it.** This rebuilds each node rather than
+ * visiting it, so there is no generic child iteration that would help — a walker can hand back
+ * children, but only this function knows how to put a node back together. A `default` here is a
+ * node returned unchanged, which for an expression holding a task local means an identifier that
+ * no scope declares: `[a, a]` and `xs[i]` both shipped that way in 1.9.0. The `never` below is what
+ * makes the next such node a compile error instead.
+ */
 function rewriteExpr(expr: IrExpr, bound: ReadonlySet<string>): IrExpr {
   switch (expr.kind) {
     case 'local':
@@ -170,8 +180,12 @@ function rewriteExpr(expr: IrExpr, bound: ReadonlySet<string>): IrExpr {
         type: expr.type,
         span: expr.span,
       };
+    case 'const':
+    case 'componentField':
+      /* A literal and a column read, neither of which can name a task binding: a `componentField`
+         resolves to a view and an index the loop owns. */
+      return expr;
     case 'field':
-      return { ...expr, target: rewriteExpr(expr.target, bound) };
     case 'optionalField':
       return { ...expr, target: rewriteExpr(expr.target, bound) };
     case 'binary':
@@ -184,6 +198,10 @@ function rewriteExpr(expr: IrExpr, bound: ReadonlySet<string>): IrExpr {
       return { ...expr, operand: rewriteExpr(expr.operand, bound) };
     case 'call':
       return { ...expr, args: expr.args.map((a) => rewriteExpr(a, bound)) };
+    case 'listLiteral':
+      return { ...expr, items: expr.items.map((item) => rewriteExpr(item, bound)) };
+    case 'index':
+      return { ...expr, target: rewriteExpr(expr.target, bound), at: rewriteExpr(expr.at, bound) };
     case 'record':
       return {
         ...expr,
@@ -202,8 +220,15 @@ function rewriteExpr(expr: IrExpr, bound: ReadonlySet<string>): IrExpr {
         arms: expr.arms.map((arm) => ({ ...arm, body: rewriteExpr(arm.body, bound) })),
       };
     default:
-      return expr;
+      return unrewritten(expr);
   }
+}
+
+function unrewritten(expr: never): never {
+  throw new Error(
+    `task lowering does not rewrite \`${(expr as { kind: string }).kind}\`, so a task local named ` +
+      'inside one would emit an identifier no scope declares. Add a case above.',
+  );
 }
 
 /** The same rewrite over statements, turning a `let` into an assignment to its frame field. */

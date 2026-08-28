@@ -24,6 +24,7 @@ import type {
 } from '../ir/ir.ts';
 import { INTEGER_RANGE } from '../check/types.ts';
 import { schemaOf } from '../schema/schema.ts';
+import { anyExprIn, anyStmt } from '../ir/walk.ts';
 import { SYSTEM_VIEW } from '../check/checker.ts';
 
 /**
@@ -730,23 +731,23 @@ function emitStates(writer: Writer, states: readonly IrState[]): void {
 }
 
 /** Whether any function or task body emits, which is what decides a module needs the runtime. */
+/**
+ * Whether this module needs the runtime binding at all.
+ *
+ * **It decides whether `$rt` is declared and `__runtime` exported**, which is why the walk being
+ * complete matters more than it looks: an `emit` the walk did not reach compiled to `$rt.emit(…)`
+ * in a module that never declared `$rt`. The old version stopped at a `for` loop, so an event
+ * raised inside one produced a module that threw on load-and-call and was never wired to a host.
+ */
 function usesEmit(ir: IrModule): boolean {
-  const walk = (stmts: readonly IrStmt[]): boolean =>
-    stmts.some((stmt) => {
-      switch (stmt.kind) {
-        case 'emit':
-          return true;
-        case 'if':
-        case 'ifLet':
-          return walk(stmt.then) || (stmt.otherwise !== null && walk(stmt.otherwise));
-        case 'while':
-        case 'scope':
-          return walk(stmt.body);
-        default:
-          return false;
-      }
-    });
-  return ir.fns.some((fn) => walk(fn.body)) || ir.tasks.some((task) => walk(task.body));
+  const emits = (stmts: readonly IrStmt[]): boolean =>
+    anyStmt(stmts, (stmt) => stmt.kind === 'emit');
+  return (
+    ir.fns.some((fn) => emits(fn.body)) ||
+    ir.tasks.some((task) => emits(task.body)) ||
+    ir.systems.some((system) => emits(system.body)) ||
+    ir.handlers.some((handler) => emits(handler.body))
+  );
 }
 
 /** A module-level `on` handler: a named function, registered by `__runtime`. */
@@ -845,66 +846,20 @@ function emitFn(writer: Writer, fn: IrFn): void {
   writer.write('\n');
 }
 
+/**
+ * Whether a function's body has to be wrapped in the block that turns a `?` carrier back into a value.
+ *
+ * `?` is an early return, which an expression cannot do, so it throws an internal `{ $drift: true }`
+ * object that the wrapper catches at the function boundary. **A body the walk did not reach is a
+ * body with no wrapper**, and then that internal object escapes the function — neither the `Err`
+ * the signature promises nor anything a caller can act on. The old version named five statement
+ * kinds and returned `undefined` for the rest, so a `?` inside a `for` loop or a `scope` shipped
+ * unwrapped.
+ */
 function usesTry(stmts: readonly IrStmt[]): boolean {
-  const inExpr = (expr: IrExpr): boolean => {
-    switch (expr.kind) {
-      case 'try':
-        return true;
-      case 'field':
-      case 'optionalField':
-        return inExpr(expr.target);
-      case 'unary':
-        return inExpr(expr.operand);
-      case 'binary':
-        return inExpr(expr.left) || inExpr(expr.right);
-      case 'call':
-        return expr.args.some(inExpr);
-      case 'record':
-        return expr.fields.some((f) => inExpr(f.value));
-      case 'wrap':
-        return expr.value !== null && inExpr(expr.value);
-      case 'match':
-        return inExpr(expr.subject) || expr.arms.some((a) => inExpr(a.body));
-      default:
-        return false;
-    }
-  };
-
-  return stmts.some((stmt) => {
-    switch (stmt.kind) {
-      case 'let':
-        return inExpr(stmt.value);
-      case 'assign':
-        return inExpr(stmt.target) || inExpr(stmt.value);
-      case 'return':
-        return stmt.value !== null && inExpr(stmt.value);
-      case 'expr':
-        return inExpr(stmt.expr);
-      case 'if':
-        return (
-          inExpr(stmt.condition) ||
-          usesTry(stmt.then) ||
-          (stmt.otherwise !== null && usesTry(stmt.otherwise))
-        );
-      case 'ifLet':
-        return (
-          inExpr(stmt.subject) ||
-          usesTry(stmt.then) ||
-          (stmt.otherwise !== null && usesTry(stmt.otherwise))
-        );
-      case 'while':
-        return inExpr(stmt.condition) || usesTry(stmt.body);
-    }
-  });
+  return anyExprIn(stmts, (expr) => expr.kind === 'try');
 }
 
-/**
- * The arithmetic and propagation helpers, emitted only into modules that use them.
- *
- * Inlined per module rather than imported from the runtime, because a generated module that
- * imported the runtime would be a generated module a consumer cannot tree-shake — and because the
- * whole point of the `exports` split is that generated code depends on nothing.
- */
 const HELPERS: Readonly<Record<string, string>> = {
   /*
    * An index past the end throws, and that is the same decision integer overflow got.

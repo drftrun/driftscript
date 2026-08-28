@@ -31,6 +31,7 @@
  */
 import type { Span } from '../ast.ts';
 import type { IrExpr, IrFn, IrModule, IrStmt } from '../ir/ir.ts';
+import { bodiesOf, exprsOf, visitExprs, visitExprsIn } from '../ir/walk.ts';
 
 export interface Allocation {
   readonly span: Span;
@@ -38,40 +39,45 @@ export interface Allocation {
   readonly what: string;
 }
 
-function walkExpr(expr: IrExpr, found: Allocation[]): void {
+/**
+ * Whether this one expression allocates, and the words a report uses for it.
+ *
+ * **Exhaustive on purpose, and `never` is the whole point.** This is a *claim about a kind* — the
+ * backend either makes an object for this node or it does not — and there is no honest default for
+ * a claim. A permissive one is how a list literal, which emits a JavaScript Array, was invisible
+ * here while `@hot` was being used as a machine-checked performance contract. Traversal is
+ * `ir/walk.ts`'s job; deciding is this function's, and a new node must stop the build until
+ * somebody decides.
+ */
+function allocationOf(expr: IrExpr): Allocation | null {
   switch (expr.kind) {
     case 'record':
-      found.push({ span: expr.span, what: `a \`${expr.name}\` — a record literal is an object` });
-      for (const field of expr.fields) walkExpr(field.value, found);
-      return;
+      return { span: expr.span, what: `a \`${expr.name}\` — a record literal is an object` };
+    case 'listLiteral':
+      /* `[a, b]` emits `[a, b]`, which is an Array. It reads like a value in source and is the
+         plainest allocation the language has — which is exactly why it was missed. */
+      return {
+        span: expr.span,
+        what: `a list literal of ${expr.items.length} — \`[…]\` is an array, made here`,
+      };
     case 'wrap':
       /* `Ok(v)`, `Err(e)` and `some(v)` are all `{ tag, value }`. `none` is a shared constant and
          is the one member of this node that costs nothing. */
-      if (expr.tag !== 'none') {
-        found.push({ span: expr.span, what: `\`${expr.tag}\` wraps its value in an object` });
-      }
-      if (expr.value !== null) walkExpr(expr.value, found);
-      return;
+      if (expr.tag === 'none') return null;
+      return { span: expr.span, what: `\`${expr.tag}\` wraps its value in an object` };
     case 'optionalField':
       /* Emitted as an arrow applied to the target: a closure and, on the `some` path, an option. */
-      found.push({
+      return {
         span: expr.span,
         what: `\`?.${expr.name}\` builds an option, through a function made at the call`,
-      });
-      walkExpr(expr.target, found);
-      return;
+      };
     case 'match':
-      found.push({ span: expr.span, what: 'a `match` is emitted as a function made at the call' });
-      walkExpr(expr.subject, found);
-      for (const arm of expr.arms) walkExpr(arm.body, found);
-      return;
+      return { span: expr.span, what: 'a `match` is emitted as a function made at the call' };
     case 'try':
-      found.push({
+      return {
         span: expr.span,
         what: '`?` throws a carrier object to return early, and builds one to do it',
-      });
-      walkExpr(expr.inner, found);
-      return;
+      };
     case 'binary':
       /*
        * **String building is not here, and cannot be.** §21 lists "arbitrary string formatting"
@@ -80,72 +86,64 @@ function walkExpr(expr: IrExpr, found: Allocation[]): void {
        * would be one that can never be taken. The day the language grows concatenation is the day
        * it belongs here.
        */
-      walkExpr(expr.left, found);
-      walkExpr(expr.right, found);
-      return;
-    case 'unary':
-      walkExpr(expr.operand, found);
-      return;
-    case 'call':
-      for (const arg of expr.args) walkExpr(arg, found);
-      return;
+      return null;
+    case 'const':
+    case 'local':
+    case 'componentField':
     case 'field':
-      walkExpr(expr.target, found);
-      return;
+    case 'unary':
+    case 'index':
+      /* An index emits `$at(xs, i)` — a call and a bounds test, and no object. */
+      return null;
+    case 'call':
+      /* A call to a capability that allocates is reported by `hotDiagnostics`, which is the only
+         party holding the registry that knows. A call to an ordinary function inherits the
+         callee's allocations, reported at the call site by the same function. Neither is a
+         property of this node on its own. */
+      return null;
     default:
-      return;
+      return unreachable(expr);
   }
 }
 
-function walkStmts(stmts: readonly IrStmt[], found: Allocation[]): void {
-  for (const stmt of stmts) {
-    switch (stmt.kind) {
-      case 'let':
-        walkExpr(stmt.value, found);
-        break;
-      case 'assign':
-        walkExpr(stmt.target, found);
-        walkExpr(stmt.value, found);
-        break;
-      case 'return':
-        if (stmt.value !== null) walkExpr(stmt.value, found);
-        break;
-      case 'expr':
-        walkExpr(stmt.expr, found);
-        break;
-      case 'if':
-        walkExpr(stmt.condition, found);
-        walkStmts(stmt.then, found);
-        if (stmt.otherwise !== null) walkStmts(stmt.otherwise, found);
-        break;
-      case 'ifLet':
-        walkExpr(stmt.subject, found);
-        walkStmts(stmt.then, found);
-        if (stmt.otherwise !== null) walkStmts(stmt.otherwise, found);
-        break;
-      case 'while':
-        walkExpr(stmt.condition, found);
-        walkStmts(stmt.body, found);
-        break;
-      case 'scope':
-        walkStmts(stmt.body, found);
-        break;
-      case 'emit':
-        found.push({ span: stmt.span, what: `\`emit ${stmt.event}\` builds its payload` });
-        for (const field of stmt.fields) walkExpr(field.value, found);
-        break;
-      case 'spawn':
-        found.push({ span: stmt.span, what: `\`spawn ${stmt.task}\` allocates the task frame` });
-        for (const arg of stmt.args) walkExpr(arg, found);
-        break;
-      case 'awaitTask':
-        found.push({ span: stmt.span, what: `awaiting \`${stmt.task}\` allocates its frame` });
-        for (const arg of stmt.args) walkExpr(arg, found);
-        break;
-      default:
-        break;
-    }
+/** The same claim for a statement: the two forms that build something without an expression. */
+function allocationOfStmt(stmt: IrStmt): Allocation | null {
+  switch (stmt.kind) {
+    case 'emit':
+      return { span: stmt.span, what: `\`emit ${stmt.event}\` builds its payload` };
+    case 'spawn':
+      return { span: stmt.span, what: `\`spawn ${stmt.task}\` allocates the task frame` };
+    case 'awaitTask':
+      return { span: stmt.span, what: `awaiting \`${stmt.task}\` allocates its frame` };
+    case 'let':
+    case 'assign':
+    case 'return':
+    case 'loopJump':
+    case 'if':
+    case 'ifLet':
+    case 'while':
+    case 'forList':
+    case 'forQuery':
+    case 'await':
+    case 'scope':
+    case 'become':
+    case 'expr':
+      /*
+       * A loop allocates nothing by *being* one. `forList` reads a list it was handed and
+       * `forQuery` hoists views the host owns — what either costs is whatever its body does, and
+       * the walk reaches that through `ir/walk.ts` rather than through a case here.
+       */
+      return null;
+    default:
+      return unreachable(stmt);
   }
+}
+
+function unreachable(node: never): never {
+  throw new Error(
+    `\`check/hot.ts\` has not decided whether \`${(node as { kind: string }).kind}\` allocates. ` +
+      'Until it does, a `@hot` function containing one is accepted without being checked.',
+  );
 }
 
 /**
@@ -157,7 +155,20 @@ function walkStmts(stmts: readonly IrStmt[], found: Allocation[]): void {
  */
 export function allocationsIn(fn: IrFn): Allocation[] {
   const found: Allocation[] = [];
-  walkStmts(fn.body, found);
+  const collect = (stmts: readonly IrStmt[]): void => {
+    for (const stmt of stmts) {
+      const own = allocationOfStmt(stmt);
+      if (own !== null) found.push(own);
+      for (const expr of exprsOf(stmt)) {
+        visitExprs(expr, (node) => {
+          const allocation = allocationOf(node);
+          if (allocation !== null) found.push(allocation);
+        });
+      }
+      for (const body of bodiesOf(stmt)) collect(body);
+    }
+  };
+  collect(fn.body);
   return found;
 }
 
@@ -166,77 +177,32 @@ export function isHot(fn: IrFn): boolean {
   return fn.annotations.includes('hot');
 }
 
+/**
+ * Every call in a function's body that satisfies `wanted`, with the span to report it at.
+ *
+ * **One walk for both questions, because they were two copies of one bug.** `callsIn` found
+ * ordinary functions so a hot root could inherit their allocations, and `capabilityCalls` found
+ * dotted callees so a forbidden effect could be refused — and each carried its own recursive
+ * `switch`, each skipping the same nested positions. A call in an `if` condition was invisible to
+ * both. Traversal now comes from `ir/walk.ts`, so a position added to the IR is reached by this
+ * without anything here changing.
+ */
+function callsMatching(
+  fn: IrFn,
+  wanted: (callee: string) => boolean,
+): { callee: string; span: Span }[] {
+  const calls: { callee: string; span: Span }[] = [];
+  visitExprsIn(fn.body, (expr) => {
+    if (expr.kind === 'call' && wanted(expr.callee)) {
+      calls.push({ callee: expr.callee, span: expr.span });
+    }
+  });
+  return calls;
+}
+
 /** Which functions a function calls, by name, within this module. */
 export function callsIn(fn: IrFn, known: ReadonlySet<string>): string[] {
-  const names: string[] = [];
-  const visitExpr = (expr: IrExpr): void => {
-    if (expr.kind === 'call') {
-      if (known.has(expr.callee)) names.push(expr.callee);
-      for (const arg of expr.args) visitExpr(arg);
-      return;
-    }
-    switch (expr.kind) {
-      case 'binary':
-        visitExpr(expr.left);
-        visitExpr(expr.right);
-        return;
-      case 'unary':
-        visitExpr(expr.operand);
-        return;
-      case 'field':
-      case 'optionalField':
-        visitExpr(expr.target);
-        return;
-      case 'record':
-        for (const field of expr.fields) visitExpr(field.value);
-        return;
-      case 'wrap':
-        if (expr.value !== null) visitExpr(expr.value);
-        return;
-      case 'try':
-        visitExpr(expr.inner);
-        return;
-      case 'match':
-        visitExpr(expr.subject);
-        for (const arm of expr.arms) visitExpr(arm.body);
-        return;
-      default:
-        return;
-    }
-  };
-
-  const visit = (stmts: readonly IrStmt[]): void => {
-    for (const stmt of stmts) {
-      switch (stmt.kind) {
-        case 'let':
-          visitExpr(stmt.value);
-          break;
-        case 'assign':
-          visitExpr(stmt.target);
-          visitExpr(stmt.value);
-          break;
-        case 'return':
-          if (stmt.value !== null) visitExpr(stmt.value);
-          break;
-        case 'expr':
-          visitExpr(stmt.expr);
-          break;
-        case 'if':
-        case 'ifLet':
-          visit(stmt.then);
-          if (stmt.otherwise !== null) visit(stmt.otherwise);
-          break;
-        case 'while':
-        case 'scope':
-          visit(stmt.body);
-          break;
-        default:
-          break;
-      }
-    }
-  };
-  visit(fn.body);
-  return names;
+  return callsMatching(fn, (callee) => known.has(callee)).map((call) => call.callee);
 }
 
 /** Every function in a module, by name. */
@@ -360,73 +326,5 @@ export function hotDiagnostics(
 
 /** Every dotted call in a function's body — a capability, or an enum constructor. */
 function capabilityCalls(fn: IrFn): { callee: string; span: Span }[] {
-  const calls: { callee: string; span: Span }[] = [];
-  const visitExpr = (expr: IrExpr): void => {
-    if (expr.kind === 'call') {
-      if (expr.callee.includes('.')) calls.push({ callee: expr.callee, span: expr.span });
-      for (const arg of expr.args) visitExpr(arg);
-      return;
-    }
-    switch (expr.kind) {
-      case 'binary':
-        visitExpr(expr.left);
-        visitExpr(expr.right);
-        return;
-      case 'unary':
-        visitExpr(expr.operand);
-        return;
-      case 'field':
-      case 'optionalField':
-        visitExpr(expr.target);
-        return;
-      case 'record':
-        for (const field of expr.fields) visitExpr(field.value);
-        return;
-      case 'wrap':
-        if (expr.value !== null) visitExpr(expr.value);
-        return;
-      case 'try':
-        visitExpr(expr.inner);
-        return;
-      case 'match':
-        visitExpr(expr.subject);
-        for (const arm of expr.arms) visitExpr(arm.body);
-        return;
-      default:
-        return;
-    }
-  };
-
-  const visit = (stmts: readonly IrStmt[]): void => {
-    for (const stmt of stmts) {
-      switch (stmt.kind) {
-        case 'let':
-          visitExpr(stmt.value);
-          break;
-        case 'assign':
-          visitExpr(stmt.target);
-          visitExpr(stmt.value);
-          break;
-        case 'return':
-          if (stmt.value !== null) visitExpr(stmt.value);
-          break;
-        case 'expr':
-          visitExpr(stmt.expr);
-          break;
-        case 'if':
-        case 'ifLet':
-          visit(stmt.then);
-          if (stmt.otherwise !== null) visit(stmt.otherwise);
-          break;
-        case 'while':
-        case 'scope':
-          visit(stmt.body);
-          break;
-        default:
-          break;
-      }
-    }
-  };
-  visit(fn.body);
-  return calls;
+  return callsMatching(fn, (callee) => callee.includes('.'));
 }

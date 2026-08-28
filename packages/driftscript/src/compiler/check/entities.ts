@@ -34,6 +34,7 @@ import type {
   SystemDecl,
   TypeRef,
 } from '../ast.ts';
+import { visitExprs } from '../astWalk.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
 import type { Type } from './types.ts';
 import { checkEditorAnnotation } from './editor.ts';
@@ -310,40 +311,22 @@ function directAccess(
     return rows.get(expr.target.name) ?? null;
   };
 
+  /*
+   * **Recursion comes from `astWalk.ts`; this only decides what a node means.**
+   *
+   * The statement half of this walk was already exhaustive — `assertWalked` below says why, and it
+   * is the right rule. The expression half was not, so an access written inside `[…]` or `xs[…]`
+   * was invisible: the inferred set came back narrower than the truth, the system asked the engine
+   * for a view it had not declared, and the refusal arrived at run time instead of as a diagnostic.
+   */
   const fromExpr = (expr: Expr): void => {
-    const named = componentNamed(expr, model);
-    if (named !== null) reads.add(named);
-    const row = rowRead(expr);
-    if (row !== null) reads.add(row);
-    switch (expr.kind) {
-      case 'call':
-        if (expr.callee.kind === 'ident') calls.add(expr.callee.name);
-        expr.args.forEach(fromExpr);
-        return;
-      case 'member':
-      case 'optionalMember':
-        fromExpr(expr.target);
-        return;
-      case 'unary':
-        fromExpr(expr.operand);
-        return;
-      case 'binary':
-        fromExpr(expr.left);
-        fromExpr(expr.right);
-        return;
-      case 'record':
-        for (const field of expr.fields) fromExpr(field.value);
-        return;
-      case 'try':
-        fromExpr(expr.inner);
-        return;
-      case 'match':
-        fromExpr(expr.subject);
-        for (const arm of expr.arms) fromExpr(arm.body);
-        return;
-      default:
-        return;
-    }
+    visitExprs(expr, (node) => {
+      const named = componentNamed(node, model);
+      if (named !== null) reads.add(named);
+      const row = rowRead(node);
+      if (row !== null) reads.add(row);
+      if (node.kind === 'call' && node.callee.kind === 'ident') calls.add(node.callee.name);
+    });
   };
 
   const fromStmt = (stmt: Stmt): void => {

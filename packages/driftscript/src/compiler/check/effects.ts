@@ -19,7 +19,8 @@
  * writes audio has `audio.write` whether or not this target links audio, which is what lets a `.drs`
  * file be checked against capabilities that have not shipped.
  */
-import type { FnDecl, Expr, Module, Span, Stmt } from '../ast.ts';
+import type { FnDecl, Module, Span } from '../ast.ts';
+import { visitExprsIn } from '../astWalk.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
 import type { CapabilityRegistry, Effect } from '../../registry/capability.ts';
 import { DETERMINISTIC_EFFECTS } from '../../registry/capability.ts';
@@ -53,139 +54,33 @@ function importedNames(module: Module): ReadonlyMap<string, string> {
   return names;
 }
 
-/**
- * A statement kind this walk does not handle, refused at compile time.
- *
- * A function rather than an inline `const _: never = stmt`, so the error names this file and the
- * reason rather than a variable nobody assigned.
- */
-function assertWalked(stmt: never): void {
-  throw new Error(
-    `effect inference does not walk \`${(stmt as { kind: string }).kind}\`, so every call inside ` +
-      'one is invisible to it. Add a case above.',
-  );
-}
-
 /** Every function this one calls, by name, including capability calls. */
 function calleesOf(decl: FnDecl): ReadonlySet<string> {
   const names = new Set<string>();
 
-  const fromExpr = (expr: Expr): void => {
-    switch (expr.kind) {
-      case 'call':
-        if (expr.callee.kind === 'ident') names.add(expr.callee.name);
-        else if (expr.callee.kind === 'member' && expr.callee.target.kind === 'ident') {
-          /* `audio.play(…)` is a capability call: the module is the target, the name is the
-             member. Recorded dotted so the registry lookup does not have to guess. */
-          names.add(`${expr.callee.target.name}.${expr.callee.name}`);
-        }
-        for (const arg of expr.args) fromExpr(arg);
-        return;
-      case 'member':
-      case 'optionalMember':
-        fromExpr(expr.target);
-        return;
-      case 'unary':
-        fromExpr(expr.operand);
-        return;
-      case 'binary':
-        fromExpr(expr.left);
-        fromExpr(expr.right);
-        return;
-      case 'record':
-        for (const field of expr.fields) fromExpr(field.value);
-        return;
-      case 'try':
-        fromExpr(expr.inner);
-        return;
-      case 'match':
-        fromExpr(expr.subject);
-        for (const arm of expr.arms) fromExpr(arm.body);
-        return;
-      default:
-        return;
+  /*
+   * **Traversal comes from `astWalk.ts`, and that is the whole of the fix.**
+   *
+   * This walk used to be two hand-written recursive switches. The statement half had already been
+   * hardened once — the day the query loop landed, `@deterministic` started passing for a function
+   * playing audio inside a `for`, and a `never` was added so it could not happen again. The
+   * expression half was left with a permissive `default`, so the same failure came back through a
+   * different door: a call inside `[f()]` or `xs[f()]` was invisible, and the annotation passed.
+   *
+   * Naming nothing is what makes that unrepeatable. A position added to the syntax tree is reached
+   * here without this file changing, and the one place that must be taught a new node refuses to
+   * compile until it is.
+   */
+  visitExprsIn(decl.body, (expr) => {
+    if (expr.kind !== 'call') return;
+    if (expr.callee.kind === 'ident') names.add(expr.callee.name);
+    else if (expr.callee.kind === 'member' && expr.callee.target.kind === 'ident') {
+      /* `audio.play(…)` is a capability call: the module is the target, the name is the member.
+         Recorded dotted so the registry lookup does not have to guess. */
+      names.add(`${expr.callee.target.name}.${expr.callee.name}`);
     }
-  };
+  });
 
-  const fromStmt = (stmt: Stmt): void => {
-    switch (stmt.kind) {
-      case 'let':
-        fromExpr(stmt.value);
-        return;
-      case 'assign':
-      case 'compoundAssign':
-        fromExpr(stmt.target);
-        fromExpr(stmt.value);
-        return;
-      case 'return':
-        if (stmt.value !== undefined) fromExpr(stmt.value);
-        return;
-      case 'expr':
-        fromExpr(stmt.expr);
-        return;
-      case 'if':
-        fromExpr(stmt.condition);
-        stmt.then.forEach(fromStmt);
-        stmt.otherwise?.forEach(fromStmt);
-        return;
-      case 'ifLet':
-        fromExpr(stmt.subject);
-        stmt.then.forEach(fromStmt);
-        stmt.otherwise?.forEach(fromStmt);
-        return;
-      case 'while':
-        fromExpr(stmt.condition);
-        stmt.body.forEach(fromStmt);
-        return;
-      case 'forQuery':
-        /* A query names components rather than calling anything, so only the body carries calls. */
-        stmt.body.forEach(fromStmt);
-        return;
-      case 'emit':
-        /* An event's field values are ordinary expressions, and a call in one was invisible. */
-        for (const field of stmt.fields) fromExpr(field.value);
-        return;
-      case 'spawn':
-      case 'awaitTask':
-        /* The task's own effects are not this function's; the arguments it is handed are. */
-        stmt.args.forEach(fromExpr);
-        return;
-      case 'await':
-        fromExpr(stmt.duration);
-        return;
-      case 'scope':
-        stmt.body.forEach(fromStmt);
-        return;
-      case 'become':
-        /* A state name and nothing else. There is no expression here to walk. */
-        return;
-      case 'forList':
-        /* The list being walked is an expression and may hold a call; the body is statements. */
-        fromExpr(stmt.subject);
-        stmt.body.forEach(fromStmt);
-        return;
-      case 'loopJump':
-        /* A keyword and nothing else, so there is no call inside it to infer an effect from. Named
-           rather than left to the `default`, because the `default` is a compile error on purpose. */
-        return;
-      default:
-        /*
-         * **Exhaustive on purpose, and this switch was not.**
-         *
-         * It named seven statement kinds and had no `default`, so a kind it did not name was
-         * skipped in silence — and a skipped statement means every call inside it is invisible to
-         * inference. When the query loop landed, `@deterministic` would have passed for a function
-         * playing audio, as long as the call sat inside a `for`. Nothing failed; that is the whole
-         * problem with a walk that can quietly not walk.
-         *
-         * `never` makes the next statement kind a compile error here instead.
-         */
-        assertWalked(stmt);
-        return;
-    }
-  };
-
-  decl.body.forEach(fromStmt);
   return names;
 }
 
