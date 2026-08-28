@@ -28,13 +28,43 @@ arrived over a network. So:
   calls. What that call *does* belongs to the host that defined it, and no amount of checking here
   makes an unsafe binding safe.
 - **A build that configures no registry and no manifest.** That configuration verifies nothing and
-  says so, in the README and in this sentence. It is for a first look.
+  says so, in the README and in this sentence. It is for a first look — and as of 1.10.0 a
+  `mode: 'production'` build is refused unless it has both, or says `verification: 'none'` on
+  purpose. What was easy to do by accident now has to be asked for.
 - **Denial of service by compiling something enormous.** The compiler is a build-time tool run on
   input you chose to build.
 
 **If a script can reach a capability its target does not provide, that is a vulnerability in this
 package whatever the host did.** That refusal is the promise, and it is the one worth reporting
 against.
+
+## Capability enforcement is authority, not isolation
+
+**The two get confused, and the difference matters most for exactly the case this language was built
+for**: running a script somebody else wrote.
+
+What the capability model gives you is *authority control*. A `.drs` file cannot name a JavaScript
+global, reach a host object, or import anything the target did not provide. Every host surface
+arrives through an explicit binding, the compiler infers what a program's effects are, and the
+linker refuses a module the target withholds. That is a real and unusual guarantee, and it is the
+one to report a hole in.
+
+What it is not is a sandbox. Compiled output is a JavaScript module running in the host's own realm,
+so by itself the model gives you none of:
+
+- a CPU budget, or any way to interrupt a script that does not return;
+- a memory quota;
+- containment if the compiler or the emitter has a bug;
+- protection from a program that is entirely legal and merely expensive.
+
+**For genuinely untrusted content, run the compiled module in an isolated execution environment** —
+a Worker, or whatever realm or process boundary the platform gives you — and pass capabilities
+across a narrow interface. DriftScript then supplies the language-level authority restriction,
+compile-time effect verification and target linking, and the environment supplies isolation,
+termination and resource limits. The two are complementary, and neither substitutes for the other.
+
+Denial of service by a script that computes forever is outside the threat model here for that
+reason: it is a property of where you ran the module, not of what the language let it name.
 
 ## Supported versions
 

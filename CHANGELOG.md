@@ -12,6 +12,82 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.10.0
+
+**Nine semantic passes each carried their own recursive walk over the compiler's tree, and every one
+of them ended in a permissive default — so a node kind a pass did not name was skipped in silence.**
+A source review asked whether `@hot` was complete. It was not, and neither was anything else built
+the same way: five programs compiled clean and failed at run time, and two inference passes let
+`@deterministic` and a system's declared access pass for code that violated both.
+
+The five, all of which shipped:
+
+- a task local read inside `[a, b]` or `xs[i]` emitted a bare identifier — a `ReferenceError` on the
+  first resume that reached the line;
+- a `let` inside a `for` loop in a task was written to the frame and read from a scope;
+- an `emit` inside a `for` loop compiled to `$rt.emit(…)` in a module that declared no `$rt` and
+  exported no `__runtime`;
+- a `?` inside a `for` loop or a `scope` left its function unwrapped, so the internal carrier object
+  escaped instead of becoming an `Err`;
+- `@hot` accepted a list literal, an allocation anywhere in a loop body, and anything reached
+  through a condition, an `ifLet` subject, an index subscript, a spawn argument or an event payload.
+
+`ir/walk.ts` and `astWalk.ts` are the one description of what a node contains now, both exhaustive
+on `never`. A pass that only recurses asks them and names no kind, so a node added later is walked
+correctly without it changing; a pass making a claim about a kind — what allocates, how to rebuild a
+node — keeps its own switch and ends it on `never`, because a claim has no safe default.
+`walkers.test.ts` asserts the matrix by nested position rather than by feature.
+
+**`await` inside `for … in` used to throw a bare internal error from the emitter, and now it
+works.** The cutter splits a list loop the way it already split a `while`, with the list and the
+index on the frame. A `continue` lands on the increment rather than the loop head, because one that
+jumped to the head would re-bind the same element for ever — a task alive, resuming, and making no
+progress. A query loop still refuses to suspend, and now refuses however deeply the `await` is
+nested.
+
+**`i64` and `u64` claimed a range the backend cannot represent.** A JavaScript number is a double:
+exact to `2^53 - 1` and no further. The bounds were computed as `2 ** 64 - 1`, which *is* `2^64` as
+a double, so nothing was ever outside a `u64` and sums went on running with bits already lost. Their
+domain is now `-(2^53 - 1) … 2^53 - 1` and `0 … 2^53 - 1`; the nominal width still means what it says
+wherever a value is stored, which is why the types stay. Wrapping is refused on both by name, since
+two values near the top add to almost `2^54` where the sum is rounded before anything can reduce it;
+checked and saturating arithmetic are untouched. A literal is now checked against its type at every
+width — `let n: u8 = 300` compiled before this — and a negative literal is checked after its sign is
+applied, which was wrong in both directions.
+
+**A live task is rebound only when its frame and its resume points agree.** A suspended task was
+being handed to new code on its exported name alone. Each task now emits its frame layout and the
+shape of its suspensions, and `patchModule` plans every live task before the first write and refuses
+atomically. Body edits, duration changes and added or removed locals are carried; a type change or a
+moved `await` is refused, naming what it is. The package README has the table.
+
+**`typeKey` returned `type.kind` for anything it did not special-case**, so every integer width keyed
+as `int`, every enum as `enum` and every list as `list` — and callers compare it for equality. A
+migration would carry a `u8` into an `i64`, an interface change from `u8` to `i64` hashed identically,
+and, because a component field's type is this string while a host's column table is keyed by the
+width, **every integer component field threw at bind**. Nothing in the corpus declares one, which is
+why it stood.
+
+**A module specifier is serialised rather than quoted.** The parser keeps whatever sits between the
+quotes and a filesystem host resolves it as a path, so a directory holding an apostrophe produced
+generated JavaScript that would not parse. `AGENTS.md` carries the rule this generalises to.
+
+**A `mode: 'production'` build is refused without a manifest and a registry**, unless
+`verification: 'none'` says it is deliberately unverified. Without them nothing links and
+`@deterministic` is a claim nothing checked, and that was the shortest working config. Development is
+unchanged.
+
+**The fixed simulation step is a target's, not the parser's.** `CompileOptions.fixedStepsPerSecond`
+defaults to 60; `DS0133` lists the rates that divide *your* step, and the value a module was built
+with rides in its metadata, so a module cached at 30 and loaded by a host running at 60 can be told
+apart from one built for it.
+
+`SECURITY.md` now separates capability enforcement from execution isolation: the model controls what
+a script may *name*, and gives no CPU budget, no memory quota and no containment. Untrusted content
+belongs in a Worker with capabilities passed across it.
+
+---
+
 ## 1.9.0
 
 **The compiler and a host's runtime gave opposite instructions about the same line, and this one
@@ -325,6 +401,18 @@ generated TextMate grammar.
 
 `driftscript-vscode` carries its own number because it ships to a different registry on a different
 schedule. It is on the marketplace as `DriftTech.driftscript-vscode`.
+
+### 0.5.0
+
+**A re-cut, because the server a 0.4.0 client carries refuses code 1.10.0 accepts.** `await` inside
+a `for … in` is the visible one: the bundled 1.9.0 compiler does not merely report it, it *throws*
+from the statement emitter, so a file containing one gets no diagnostics at all rather than wrong
+ones. The integer literal checks and the wrapping refusal are the other direction — a 0.4.0 client
+stays quiet about `let n: u8 = 300`, which the language now refuses.
+
+- The server is a 1.10.0 one.
+- Nothing in the client changed. **The version moves because what it carries did**, for the fourth
+  time and for the same reason.
 
 ### 0.4.0
 

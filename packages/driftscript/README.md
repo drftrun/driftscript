@@ -140,6 +140,18 @@ no unprovided module, so `@deterministic` is a claim nothing verified and a scri
 surface the target does not have. It will not resolve `std/math` either, because with no registry
 there is nothing to resolve it against.
 
+**A `mode: 'production'` build is refused unless it has both.** That is new in 1.10.0, and it exists
+because the shortest working config was also the one with both guarantees off — a shipping bundle in
+which `@deterministic` had been checked by nothing looked exactly like one in which it had. A build
+that genuinely wants no verification says so:
+
+```ts
+driftScript({ mode: 'production', verification: 'none' })
+```
+
+Development is unaffected, because an editor open on a file with no project configured has to report
+the errors it can see.
+
 Turn both on by describing your host:
 
 ```ts
@@ -179,6 +191,22 @@ survives a process boundary. `serializeRegistry` writes that file and `registryF
 back. The language server reads the same file, for the same reason.
 
 Passing both `registry` and `capabilities` is refused. Neither one silently wins.
+
+### If your simulation does not run at sixty steps a second
+
+`update at 1Hz` compiles to a **stride** — how many fixed steps to skip — so the number of fixed
+steps in a second is what turns a rate into one. It defaults to 60, which is what this language's
+first host runs. A host whose loop differs says so:
+
+```ts
+driftScript({ fixedStepsPerSecond: 30 })
+```
+
+Getting this wrong is silent: at 30 a second, a module built for 60 runs every system half as often
+as it asked for, and nothing in the output says why. The value a module was built with is recorded
+in its metadata as `fixedStepsPerSecond`, so a host can compare. `DS0133` also lists the rates that
+divide *your* step when one does not — at 30, `4Hz` is refused and `1, 2, 3, 5, 6, 10, 15, 30Hz` are
+offered.
 
 ### A capability that works at either float width
 
@@ -241,6 +269,37 @@ const module = loadModule(door as unknown as Record<string, unknown>);
 `setClockSource` comes **before** `loadModule` if the file declares a task: a spawn runs its task up
 to the first await, and an await asks the clock what step it is on.
 
+### Reloading a module without restarting the scene
+
+```ts
+import { patchModule } from 'driftscript';
+
+const result = patchModule(module, await import(`./door.drs?t=${Date.now()}`), { Door: doors });
+if (!result.patched) console.warn(result.reason);
+```
+
+**A patch either preserves the running state or is refused whole**, and the second argument is why:
+records are plain objects your code holds, so a shape change is migrated across the instances you
+pass and refused in words if you pass none. Nothing is written until every part of the patch is
+known to be safe.
+
+**A suspended task is state too, and as of 1.10.0 it is checked like the rest.** Each task's frame
+layout and the shape of its resume points ride in the module's metadata, so a patch across a live
+task either carries it or says why not:
+
+| Edit, while a task is suspended | What happens |
+|---|---|
+| change what runs after the `await` | patched, the task keeps the time it has already waited |
+| change a wait's duration | patched; the current wait finishes on the old one |
+| add or remove a local | patched, the frame is migrated |
+| change a live local's type | **refused**, naming the field |
+| add, remove or move an `await` | **refused**, naming the task |
+| rename or remove the task | left running on its old code |
+
+Before 1.10.0 a running task was rebound on its exported name alone, so the last two rows ran
+anyway — an old frame's resume point selected a continuation belonging to different source, and a
+newly added local was read from a frame that never had it. Neither failed anywhere visible.
+
 ## Entry points
 
 ```text
@@ -265,7 +324,7 @@ language's keywords by reading the lexer. The VSCode client is in the same repos
 
 ## What it costs
 
-447 kB packed, 2.0 MB unpacked, because the tarball carries compiled JavaScript, declarations,
+497.8 kB packed, 2.2 MB unpacked, because the tarball carries compiled JavaScript, declarations,
 source maps and the source those maps point at. The runtime a browser actually receives is a few
 kilobytes gzipped — the compiler is behind its own entry point and a production bundle drops it.
 
