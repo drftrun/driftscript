@@ -165,8 +165,16 @@ somebody can write today**. Two cases, and they are not the same urgency:
   one, and until a host registers such a capability there is nothing to be wrong about. Every 1.7.0
   *script* form compiles clean on the 0.3.0 server, which was checked rather than assumed.
 
-The cheap test for either is the one used both times: install the version the published `.vsix`
-bundles into an empty project, and run the code in question through it.
+**The first case is now a gate rather than a habit.** `scripts/editors.test.mjs` packs the `.vsix`,
+spawns the server inside it, opens a document holding every form the language has, and fails if a
+lexical or syntactic diagnostic comes back — naming the code the packed server produced. So a client
+that has fallen behind the compiler is caught by `npm run test:scripts` instead of by remembering to
+check. A `DS02xx` is not a failure there: that server starts with no host, and a name only a registry
+could supply is expected to be unknown.
+
+The second case has no gate and cannot have one here, since it depends on a host's registry rather
+than on this repository. The cheap test for it is the one used both times: install the version the
+published `.vsix` bundles into an empty project, and run the code in question through it.
 
 ```sh
 npm run vsix                                    # builds and packages, into editors/vscode/

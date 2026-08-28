@@ -196,6 +196,48 @@ test('the client falls back to a bundled server, which the build emits', () => {
 });
 
 /**
+ * A document using the newest forms, opened against the packed server.
+ *
+ * **Every line here is something a previous client could not parse**, which is the only reason a
+ * line is in it: module constants, a list with its literal and its walk, `break`, a component row
+ * as a parameter, a component reached through a handle, and a system's `uses` clause. When the
+ * language grows a form, it is added here, and the day the packed client is older than the compiler
+ * this fails with the code it produced rather than with a reminder to check by hand.
+ */
+const CURRENT_FORMS = `let LIMIT = 3
+
+component Placement {
+    speed: f32 = 0
+}
+
+fn advance(p: mut Placement, by: f32) {
+    p.speed = p.speed + by
+}
+
+fn total(xs: List<f32>) -> f32 {
+    var sum = 0
+    for x in xs {
+        if x > LIMIT {
+            break
+        }
+        sum += x
+    }
+    return sum
+}
+
+system Walk {
+    uses graph: NavGraph
+    writes Placement
+
+    update at 2Hz {
+        for e in query<Placement>() {
+            advance(e.Placement, 1)
+        }
+    }
+}
+`;
+
+/**
  * The extension packages, and the server inside the package starts.
  *
  * **Every earlier version of this passed while the extension was unusable**, which is why this test
@@ -206,8 +248,22 @@ test('the client falls back to a bundled server, which the build emits', () => {
  *
  * It is the same assertion `scripts/publish-check.mjs` makes about the npm packages, for the same
  * reason: the artefact a stranger receives is the only thing worth checking.
+ *
+ * ---
+ *
+ * **It also opens a document and reads the diagnostics back, which is the half that decides whether
+ * the client has to be re-cut.** A bundled server is frozen at the moment the `.vsix` was packed,
+ * so the question `docs/RELEASING.md` asks every release is what a server of that vintage would say
+ * about code somebody can write today — and its first case is the one that matters: *it cannot
+ * parse the syntax*, so a whole valid document goes red and stays red.
+ *
+ * That was checked by hand twice and it is a claim that drifts, which is what this file is for. The
+ * document below uses the newest forms; a syntax refusal against it means the packed server is
+ * older than the language and the client needs packing again. **A `DS02xx` is not a failure here**
+ * — this server is started with no host at all, so a name only a registry could supply is expected
+ * to be unknown, and asserting otherwise would be asserting that the language server has a host.
  */
-test('the packaged extension carries a server that answers an LSP initialize', async () => {
+test('the packaged extension carries a server that starts and parses today\'s syntax', async () => {
   const out = path.join(EXTENSION, 'out', 'server.mjs');
   assert.ok(
     existsSync(out),
@@ -232,36 +288,84 @@ test('the packaged extension carries a server that answers an LSP initialize', a
     const server = path.join(room, 'extension', 'out', 'server.mjs');
     assert.ok(existsSync(server), 'the .vsix carries no server; .vscodeignore has excluded it');
 
-    const answer = await new Promise((resolve) => {
+    const { error, diagnostics } = await new Promise((resolve) => {
       const child = spawn('node', [server], { stdio: ['pipe', 'pipe', 'pipe'] });
-      const body = JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: { processId: process.pid, rootUri: null, capabilities: {} },
-      });
-      child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      const send = (message) => {
+        const body = JSON.stringify({ jsonrpc: '2.0', ...message });
+        child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      };
 
-      let stdout = '';
+      /* Buffers rather than a string, because `Content-Length` counts bytes and the server's own
+         startup log carries multi-byte characters — slicing a string by a byte count cuts a frame
+         in half, which is a parse error in the test rather than a finding about the server. */
+      let buffer = Buffer.alloc(0);
       let stderr = '';
-      const give = setTimeout(() => finish(`no reply in 20s. stderr: ${stderr.slice(0, 300)}`), 20_000);
-      const finish = (error) => {
+      const give = setTimeout(
+        () => finish(`no diagnostics in 30s. stderr: ${stderr.slice(0, 300)}`),
+        30_000,
+      );
+      const finish = (message, published) => {
         clearTimeout(give);
         child.kill();
-        resolve(error);
+        resolve({ error: message, diagnostics: published });
       };
+
       child.stdout.on('data', (chunk) => {
-        stdout += chunk;
-        if (stdout.includes('"capabilities"')) finish(undefined);
+        buffer = Buffer.concat([buffer, chunk]);
+        for (;;) {
+          const head = buffer.indexOf('\r\n\r\n');
+          if (head < 0) return;
+          const length = Number(
+            /Content-Length: (\d+)/.exec(buffer.subarray(0, head).toString())?.[1],
+          );
+          if (!Number.isFinite(length) || buffer.length < head + 4 + length) return;
+          const message = JSON.parse(buffer.subarray(head + 4, head + 4 + length).toString());
+          buffer = buffer.subarray(head + 4 + length);
+
+          if (message.id === 1) {
+            send({ method: 'initialized', params: {} });
+            send({
+              method: 'textDocument/didOpen',
+              params: {
+                textDocument: {
+                  uri: 'file:///packed.drs',
+                  languageId: 'driftscript',
+                  version: 1,
+                  text: CURRENT_FORMS,
+                },
+              },
+            });
+          }
+          if (message.method === 'textDocument/publishDiagnostics') {
+            finish(undefined, message.params.diagnostics);
+          }
+        }
       });
       child.stderr.on('data', (chunk) => {
         stderr += chunk;
       });
-      child.on('error', (error) => finish(error.message));
+      child.on('error', (problem) => finish(problem.message));
       child.on('exit', (code) => finish(`exited with ${code}. stderr: ${stderr.slice(0, 400)}`));
+
+      send({
+        id: 1,
+        method: 'initialize',
+        params: { processId: process.pid, rootUri: null, capabilities: {} },
+      });
     });
 
-    assert.equal(answer, undefined, `the bundled server did not answer an initialize: ${answer}`);
+    assert.equal(error, undefined, `the bundled server did not answer: ${error}`);
+
+    /* Lexical and syntactic only. A `DS02xx` about a name no registry supplied is what a server
+       with no host is supposed to say, and it is not what a re-cut would fix. */
+    const refused = (diagnostics ?? []).filter((d) => /^DS0(0|1)\d\d$/.test(String(d.code ?? '')));
+    assert.deepEqual(
+      refused.map((d) => `${d.code} ${d.message}`),
+      [],
+      'the packed server cannot parse a form the language has. It is older than the compiler in ' +
+        'this checkout, so `npm run extension` and `npm run vsix` again — see the re-cut rules in ' +
+        'docs/RELEASING.md.',
+    );
   } finally {
     rmSync(room, { recursive: true, force: true });
   }
