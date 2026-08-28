@@ -164,6 +164,15 @@ export interface CheckResult {
    * function call on a per-frame path to re-round a number that was already rounded.
    */
   readonly rounded: ReadonlySet<Expr>;
+  /**
+   * Each system's `uses` clauses, by system name: the name each binds and the type it resolved to.
+   *
+   * **Resolved here rather than reprinted from the syntax tree**, because the metadata a host reads
+   * asks for a resource *by type* and a second place deciding what a written annotation names is a
+   * second answer to one question. It is also what makes an unresolvable type visible downstream as
+   * `<unresolved>` instead of as a plausible name nothing registered.
+   */
+  readonly systemResources: ReadonlyMap<string, readonly { readonly name: string; readonly type: string }[]>;
   readonly diagnostics: readonly Diagnostic[];
 }
 
@@ -353,6 +362,9 @@ class Checker {
 
   /** See `CheckResult.componentWorlds`. Keyed by the `<entity>.<Component>` member. */
   private readonly componentWorlds = new Map<Expr, string>();
+
+  /** See `CheckResult.systemResources`. Filled by `declareResources`, keyed by system name. */
+  private readonly systemResources = new Map<string, { name: string; type: string }[]>();
 
   /**
    * `<row>.<field>` where `row` is a component parameter, and which component it is a row of.
@@ -737,6 +749,7 @@ class Checker {
       functions: this.functions,
       constants: this.constants,
       componentWorlds: this.componentWorlds,
+      systemResources: this.systemResources,
       rowFields: this.rowFields,
       queries: this.queries,
       access: this.access,
@@ -1360,9 +1373,83 @@ class Checker {
       type: { kind: 'data', name: 'World', fields: new Map() },
       mutable: false,
     });
+    this.declareResources(decl, scope);
     for (const stmt of decl.body) this.checkStmt(stmt, scope);
     this.worldInScope = previousWorld;
     this.returns = previous;
+  }
+
+  /**
+   * Bind a system's `uses` clauses, and refuse the three ways one is wrong.
+   *
+   * **A resource is immutable in the body.** It is a handle the host owns: a script passes it back
+   * to a capability and cannot look inside it, so there is nothing to assign and rebinding the name
+   * would only lose the thing the system was handed.
+   *
+   * The type is resolved exactly as a parameter's would be, so an unknown name reports `DS0204` or
+   * `DS0237` at the clause. That is what makes a `uses` of a host type behave the same as
+   * `fn f(graph: NavGraph)` in a file the language server opens with no project configured: both
+   * refuse, in the same words, rather than one of them quietly succeeding.
+   */
+  private declareResources(decl: SystemDecl, scope: Scope): void {
+    const byType = new Map<string, string>();
+    const resolved: { name: string; type: string }[] = [];
+    this.systemResources.set(decl.name, resolved);
+    for (const resource of decl.uses) {
+      const type = this.resolveTypeRef(resource.type);
+
+      if (resource.name === SYSTEM_VIEW) {
+        /* Not a shadowing rule in general — `let world = …` inside a body is ordinary scoping and
+           visible on the line that does it. This is the one that is invisible: the clause is in the
+           head, so every `ecs` call in the body below would silently run against the resource. */
+        this.report(
+          'DS0272',
+          `a resource cannot be named \`${SYSTEM_VIEW}\`, which is already the world this system ` +
+            'runs against. Every `drift/ecs` call in the body takes that name.',
+          resource.span,
+        );
+        continue;
+      }
+
+      const name = nameOf(type);
+      const existing = byType.get(name);
+      if (existing !== undefined) {
+        /*
+         * **A resource is one per type**, so two clauses of one type are two names for one object.
+         * Refused at the second rather than accepted, because the two names read as two things and
+         * the day somebody writes to one expecting the other to be unchanged there is nothing to
+         * find: they were always the same handle.
+         */
+        this.report(
+          'DS0273',
+          `\`${resource.name}\` and \`${existing}\` are both \`${name}\`, and a host supplies one ` +
+            'value per type — so these are two names for one object rather than two resources.',
+          resource.span,
+        );
+        continue;
+      }
+      if (type.kind !== 'error') byType.set(name, resource.name);
+
+      /*
+       * A repeated *name* is refused here rather than left to the scope.
+       *
+       * `Scope.declare` overwrites, because shadowing a name with a later `let` is ordinary and
+       * visible on the line that does it. A declaration head has no such ordering to read: two
+       * clauses claiming one name is a mistake in a list, and the one that wins would be whichever
+       * was written second.
+       */
+      if (scope.lookup(resource.name) !== undefined) {
+        this.report(
+          'DS0274',
+          `\`${resource.name}\` is declared twice in this system's head, so nothing in the body ` +
+            'could say which one it meant.',
+          resource.span,
+        );
+        continue;
+      }
+      scope.declare(resource.name, { type, mutable: false });
+      resolved.push({ name: resource.name, type: name });
+    }
   }
 
   /**

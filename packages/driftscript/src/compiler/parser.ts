@@ -575,9 +575,15 @@ class Parser {
   }
 
   /**
-   * `system S { reads C  writes C  after T  update at 1Hz { … } }`.
+   * `system S { reads C  writes C  uses n: T  after T  update at 1Hz { … } }`.
    *
    * One `update` block, and the rate becomes a stride here — see `FIXED_STEPS_PER_SECOND`.
+   *
+   * **`uses` is the one clause that binds a name rather than naming a component**, so it parses a
+   * name and a type where the other three parse a name alone. It is written `uses graph: NavGraph`
+   * — the same `name: Type` a parameter is — because that is the shape a reader already knows for
+   * "here is a value and here is what it is", and inventing a second one for the same idea is how a
+   * language ends up with two spellings of a colon.
    */
   private parseSystem(annotations: readonly string[]): SystemDecl | null {
     const start = this.next().start;
@@ -596,6 +602,7 @@ class Parser {
     const reads: { name: string; span: Span }[] = [];
     const writes: { name: string; span: Span }[] = [];
     const after: { name: string; span: Span }[] = [];
+    const uses: { name: string; type: TypeRef; span: Span }[] = [];
     let everyTicks = 1;
     let body: readonly Stmt[] | null = null;
     let updateEnd = name.end;
@@ -628,6 +635,27 @@ class Parser {
         if (!clause(after, 'after')) { this.resynchronise(); return null; }
         continue;
       }
+      if (this.accept('keyword', 'uses') !== null) {
+        const bound = this.acceptIdentLike();
+        if (bound === null) {
+          const found = this.peek();
+          this.report('DS0133', 'expected a name after `uses`', {
+            start: found.start,
+            end: found.end,
+          });
+          this.resynchronise();
+          return null;
+        }
+        if (this.expect('punct', ':', 'DS0103') === null) {
+          this.resynchronise();
+          return null;
+        }
+        const type = this.parseTypeRef();
+        if (type === null) { this.resynchronise(); return null; }
+        uses.push({ name: bound.text, type, span: { start: bound.start, end: type.span.end } });
+        this.accept('punct', ',');
+        continue;
+      }
       if (this.check('keyword', 'update')) {
         if (body !== null) {
           const found = this.peek();
@@ -654,7 +682,8 @@ class Parser {
       const found = this.peek();
       this.report(
         'DS0133',
-        'a system body holds `reads`, `writes`, `after` and one `update` block, and nothing else.',
+        'a system body holds `reads`, `writes`, `uses`, `after` and one `update` block, and ' +
+          'nothing else.',
         { start: found.start, end: found.end },
       );
       this.resynchronise();
@@ -682,6 +711,7 @@ class Parser {
       name: name.text,
       reads,
       writes,
+      uses,
       after,
       everyTicks,
       body,

@@ -43,6 +43,15 @@ export interface EntityMetadata {
     readonly name: string;
     readonly reads: readonly string[];
     readonly writes: readonly string[];
+    /**
+     * The host values this system asks to be handed, by the type each is.
+     *
+     * **A host reads the type and not the name**: the generated function takes a table keyed by
+     * type, so a host that has a `NavGraph` supplies it once and every system that asked for one
+     * gets it, whatever each file called its binding. Always present, even empty, for the reason
+     * the four lists above are — a system that needs nothing says so rather than being tested for.
+     */
+    readonly uses: readonly { readonly name: string; readonly type: string }[];
     readonly after: readonly string[];
     readonly everyTicks: number;
   }[];
@@ -98,6 +107,7 @@ export function entityMetadata(
       name: system.name,
       reads: system.reads,
       writes: system.writes,
+      uses: system.uses,
       after: system.after,
       everyTicks: system.everyTicks,
     })),

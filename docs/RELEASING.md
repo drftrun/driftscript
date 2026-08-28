@@ -34,7 +34,7 @@ release is two publishes in a fixed order.
 ```sh
 npm ci
 npm run build
-npm test                 # the language: 916 tests
+npm test                 # the language: 930 tests
 npm run test:scripts     # the gates: boundaries, versions, sizes, grammar, editors, publish
 npm run typecheck
 npm run publish:check    # the clean room. Ten rows, all of them green, or stop

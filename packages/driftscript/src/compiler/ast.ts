@@ -387,7 +387,7 @@ export interface EntityDecl {
 }
 
 /**
- * `system HungerSystem { reads … writes … after … update at 1Hz { … } }`.
+ * `system HungerSystem { reads … writes … uses … after … update at 1Hz { … } }`.
  *
  * **`reads` and `writes` are checked assertions rather than the source of truth.** The checker
  * infers a system's component access through the call graph the way `check/effects.ts` infers
@@ -407,6 +407,31 @@ export interface SystemDecl {
   readonly name: string;
   readonly reads: readonly { readonly name: string; readonly span: Span }[];
   readonly writes: readonly { readonly name: string; readonly span: Span }[];
+  /**
+   * `uses graph: NavGraph` — a host value this system is handed, bound under a name in its body.
+   *
+   * **A system takes no arguments, which is what this exists to answer.** A consumer reported it:
+   * an opaque handle reaches a script only as a capability parameter, so a `fn` can take a path or
+   * a graph and a `system` can take nothing at all — and the loop over entities moved into the
+   * host, where the rule stops being the thing anybody can reload. What was left in the script was
+   * a function the host called once per entity per step.
+   *
+   * **A resource is one per type**, which is why the type is here and the name is only a binding.
+   * The host is asked for "the `NavGraph` this world has" rather than for "the thing this system
+   * calls `graph`", so two systems naming it differently are handed the same object and a script
+   * renaming its own binding changes nothing outside the file.
+   *
+   * The alternative was a component field holding a handle, which the report named first. It is
+   * refused because a component is what a save file holds: its schema carries stable field ids, a
+   * prefab gives every field a constant, and a scene load rewrites its entity columns. A host
+   * object satisfies none of those three, so the field would be the one part of a component that
+   * silently does not persist.
+   */
+  readonly uses: readonly {
+    readonly name: string;
+    readonly type: TypeRef;
+    readonly span: Span;
+  }[];
   /** Systems this one must run after, by name. A cycle in these is refused when the schedule builds. */
   readonly after: readonly { readonly name: string; readonly span: Span }[];
   /** Fixed-step stride. 1 when `update` carries no rate. */

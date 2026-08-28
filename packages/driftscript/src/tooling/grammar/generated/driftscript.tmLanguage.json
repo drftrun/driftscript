@@ -144,7 +144,7 @@
     },
     "keyword": {
       "name": "keyword.control.driftscript",
-      "match": "\\b(component|continue|require|become|import|return|entity|system|prefab|writes|update|await|spawn|state|enter|event|match|while|break|scope|reads|after|query|false|task|data|enum|from|else|emit|true|let|var|for|mut|fn|if|in|on|as|at)\\b"
+      "match": "\\b(component|continue|require|become|import|return|entity|system|prefab|writes|update|await|spawn|state|enter|event|match|while|break|scope|reads|after|query|false|task|data|enum|from|else|emit|uses|true|let|var|for|mut|fn|if|in|on|as|at)\\b"
     },
     "type": {
       "name": "support.type.primitive.driftscript",

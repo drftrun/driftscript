@@ -388,6 +388,14 @@ export interface IrSystem {
   readonly name: string;
   readonly reads: readonly string[];
   readonly writes: readonly string[];
+  /**
+   * Host values this system is handed, in declaration order: the name it binds and the type it is.
+   *
+   * **Both halves reach the backend, and they are read by different parties.** The generated
+   * function binds `name`; the metadata a host reads carries `type`, because a resource is asked
+   * for by type — so a host builds the argument without knowing what any script calls it.
+   */
+  readonly uses: readonly { readonly name: string; readonly type: string }[];
   readonly after: readonly string[];
   readonly everyTicks: number;
   readonly body: readonly IrStmt[];

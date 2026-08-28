@@ -2,7 +2,7 @@
   "name": "driftscript-vscode",
   "displayName": "DriftScript (.drs)",
   "description": "Editor support for DriftScript: diagnostics, completion, hover and semantic tokens, from the compiler itself",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "MIT",
   "icon": "icons/marketplace.png",
   "private": true,

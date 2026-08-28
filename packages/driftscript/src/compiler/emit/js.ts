@@ -25,6 +25,15 @@ import type {
 import { INTEGER_RANGE } from '../check/types.ts';
 import { schemaOf } from '../schema/schema.ts';
 import { SYSTEM_VIEW } from '../check/checker.ts';
+
+/**
+ * The parameter a system's resources arrive in, and why it is keyed by type rather than by name.
+ *
+ * A host is asked for "the `NavGraph` this world has", so what it builds is a table of types — it
+ * never has to know that one script calls it `graph` and another calls it `map`. The `$` prefix is
+ * unwritable in a `.drs` file, so nothing a script declares can collide with it.
+ */
+const RESOURCES = '$res';
 import { entityMetadata } from './entityMeta.ts';
 import { MappingBuilder, type SourceMap } from './sourceMap.ts';
 import {
@@ -1050,9 +1059,23 @@ export function emitJs(ir: IrModule, options: EmitOptions): EmitResult {
    * **Before `writer.finish()`, which is not obvious and cost a debugging round.** This loop sat
    * after it, so every system body was written into a writer that had already produced its output
    * — no error, no warning, and a module with a system in it simply did not contain one.
+   *
+   * **A system with `uses` clauses takes a second parameter and unpacks it; one without takes the
+   * view alone.** The extra parameter is emitted only where something reads it, so every system
+   * written before resources existed generates exactly the function it always did — which is what
+   * lets a host pass the second argument unconditionally without the quiet form growing anything.
+   *
+   * Unpacked into `const` bindings at the top rather than read through `$res` at each use, because
+   * a resource is used in a loop far more often than once and a property lookup per use is a cost
+   * on the frame path for nothing. One lookup per resource per tick is what a system's `run`
+   * already pays to reach the function itself.
    */
   for (const system of ir.systems) {
-    writer.block(`export function ${jsName(system.name)}(${SYSTEM_VIEW}) {`, () => {
+    const params = system.uses.length === 0 ? SYSTEM_VIEW : `${SYSTEM_VIEW}, ${RESOURCES}`;
+    writer.block(`export function ${jsName(system.name)}(${params}) {`, () => {
+      for (const resource of system.uses) {
+        writer.line_(`const ${resource.name} = ${RESOURCES}[${JSON.stringify(resource.type)}];`);
+      }
       for (const stmt of system.body) emitStmt(writer, stmt);
     });
     writer.write('\n');

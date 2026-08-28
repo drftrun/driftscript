@@ -330,6 +330,44 @@ declared — the signature is where a reader and the inference both learn it.
 name to: `let m = e.Placement` and returning one are both errors. Read a field from it, or pass it to a
 function that takes a row.
 
+### What a system is handed
+
+A system takes no arguments, so `uses` is how it receives anything the host owns:
+
+```drs
+system Walk {
+    uses graph: NavGraph
+    writes Placement
+
+    update {
+        for e in query<Placement>() {
+            let path = navigation.pathOf(graph, e)
+            e.Placement.speed = navigation.remaining(path)
+        }
+    }
+}
+```
+
+`NavGraph` is a type a host registered, like any other handle a capability takes. The clause binds
+it under a name for the body, and the name is immutable: the host owns the value, and a script
+passes it back to a capability rather than looking inside it.
+
+**A resource is one per type, and the type is what the host is asked for.** Two systems naming the
+same type differently are handed the same object, and renaming a binding changes nothing outside the
+file it is in. Two clauses of one type in one system are an error for the same reason — they were
+always two names for one thing.
+
+**Why this exists.** Without it a handle reaches a script only as a function parameter, so anything
+per-entity has to be driven from outside: the host walks the entities and calls a function once each,
+and the loop leaves the schedule, the declared-access checks, and any chance of staying in step with
+the query it replaced. A component field holding a handle would be the other way to close that, and
+it is refused: a component is what a save file holds, and a host's object has no stable id, no
+constant a prefab could give it, and nothing for a scene load to rewrite.
+
+A handle **per entity** comes from a capability, since one may return a host type:
+`navigation.pathOf(graph, e)` above is the whole pattern — the host keeps the table, the script
+keeps the rule.
+
 A name belongs to the block it was declared in. A function that declares a return type must return
 on every path — a trailing `if` without an `else` is an error, because the path where the condition
 is false reaches the end.

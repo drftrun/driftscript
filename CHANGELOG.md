@@ -12,6 +12,60 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.8.0
+
+**A system can be handed something, which is the half of an entity's world a script could not
+reach.** A consumer reported it: an opaque handle — a route, a behaviour tree, an input map —
+enters a script only as a capability parameter, so a `fn` can take one and a `system` can take
+nothing at all. What that cost was the loop. The host kept a route per agent and called a plain
+function once per agent per step, so the rule stayed in the script and hot-reloadable while the walk
+over entities moved out — out of the schedule, out of the declared-access checks, and out of step
+with the query it replaced, by hand.
+
+```drs
+system Walk {
+    uses graph: NavGraph
+    writes Placement
+
+    update {
+        for e in query<Placement>() {
+            let path = navigation.pathOf(graph, e)
+            e.Placement.speed = navigation.remaining(path)
+        }
+    }
+}
+```
+
+- **`uses name: Type` in a system's head**, beside `reads`, `writes` and `after`. The type is one a
+  host registered, resolved exactly as a parameter's is, so an unknown name refuses in the same
+  words rather than one path quietly succeeding. The binding is immutable: the host owns the value
+  and a script passes it back rather than looking inside it.
+- **A resource is one per type**, and the type is what a host is asked for — so two systems naming
+  the same type differently are handed one object, and a script renaming its own binding changes
+  nothing outside its file. Two clauses of one type in one system are refused as what they are: two
+  names for one thing.
+- **A system with no `uses` generates exactly the function it always did.** The second parameter
+  appears only where something reads it, so a host may pass it to every system unconditionally and
+  no shipped module gains a byte.
+- **The metadata says what to supply.** Each system carries its resources by name and type, always
+  present and empty where there are none — the rule the four entity lists already follow, so a host
+  reads a field rather than testing for one.
+
+**The other shape this could have taken is refused, and the reason is recorded beside the
+declaration.** A component field holding a handle was the first thing the report asked for, and a
+component is what a save file holds: its schema carries stable field ids, a prefab gives every field
+a constant, and a scene load rewrites its entity columns. A host's object satisfies none of the
+three, so that field would be the one part of a component that silently does not persist.
+
+**A handle per entity comes from a capability**, which may already return a host type — the host
+keeps the table, the script keeps the rule.
+
+**`uses` is a soft keyword**, so `data Stats { uses: i32 }` and `fn count(uses: i32)` go on parsing.
+
+**The editor client has to be re-cut for this one.** A 1.7.0-era bundled server meets `uses` and
+answers `DS0133` against the whole system declaration, which is a valid document going red — the
+first of the two cases in `docs/RELEASING.md`, and it was measured rather than assumed.
+
 ## 1.7.0
 
 **Preparation, so that building a host surface needs no language release.** Three things stood
@@ -225,6 +279,20 @@ generated TextMate grammar.
 
 `driftscript-vscode` carries its own number because it ships to a different registry on a different
 schedule. It is on the marketplace as `DriftTech.driftscript-vscode`.
+
+### 0.4.0
+
+**A re-cut, because 1.8.0 added a keyword and a bundled server that has never heard of it goes red
+on the whole declaration.** Measured rather than assumed: the 1.7.0 compiler the 0.3.0 client
+carries meets `uses graph: NavGraph` and answers `DS0133 a system body holds \`reads\`, \`writes\`,
+\`after\` and one \`update\` block, and nothing else` — against the system, not the clause, so the
+declaration is dropped and everything referring to it is wrong too. That is the first of the two
+cases in `docs/RELEASING.md`, the one that says re-cut now.
+
+- The server understands `uses`, and the grammar highlights it, both derived from the token table
+  rather than written twice.
+- Nothing in the client changed. **The version moves because what it carries did**, for the third
+  time and for the same reason.
 
 ### 0.3.0
 

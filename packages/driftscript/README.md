@@ -99,6 +99,27 @@ neither is fully described by the inference and says nothing about itself.
 when it declares a `World` parameter. There is no implicit argument anywhere, and a query loop with
 no world is refused saying so.
 
+**`uses` is how a system is handed anything else.** A system takes no arguments, so a handle a host
+owns — a route, a behaviour tree, an input map — reaches one through a clause in its head:
+
+```drs
+system Walk {
+    uses graph: NavGraph
+    writes Placement
+
+    update {
+        for e in query<Placement>() {
+            e.Placement.speed = navigation.remaining(navigation.pathOf(graph, e))
+        }
+    }
+}
+```
+
+The type is one the host registered, and it is what the host is asked for: a resource is one per
+type, so the name is only a binding and two systems naming it differently are handed one object.
+Without this, anything per-entity had to be driven from the host — the walk over entities leaves
+the schedule and the declared-access checks, and only the rule stays in the script.
+
 **A query loop may not `await`.** Its cursor comes from a pool and is given back when the loop ends,
 so a suspension would hold one across a frame where the result is already invalid.
 

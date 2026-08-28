@@ -877,6 +877,9 @@ class Lowering {
       name: decl.name,
       reads: [...reads],
       writes: [...writes],
+      /* Resolved by the checker rather than reprinted from the annotation here — see
+         `CheckResult.systemResources`. A system whose head was refused contributes none. */
+      uses: this.checked.systemResources.get(decl.name) ?? [],
       after: decl.after.map((a) => a.name),
       everyTicks: decl.everyTicks,
       body: decl.body.map((s) => this.stmt(s)),

@@ -94,6 +94,26 @@ following the functions it calls and not just its own body, and refuses a declar
 write, naming the system and the component. A declaration wider than the body is only a warning,
 because widening deliberately is sometimes what an author means.
 
+**`uses` is how a system is handed anything else.** A system takes no arguments, so a handle the
+host owns — a route, a behaviour tree, an input map — reaches one through a clause in its head:
+
+```drs
+system Walk {
+    uses graph: NavGraph
+    writes Placement
+
+    update {
+        for e in query<Placement>() {
+            e.Placement.speed = navigation.remaining(navigation.pathOf(graph, e))
+        }
+    }
+}
+```
+
+A resource is one per type, so the name is only a binding and the host is asked for the type.
+Without it, anything per-entity had to be driven from the host, and the walk over entities left the
+schedule and the declared-access checks behind.
+
 A query loop compiles to a pooled cursor and a hoisted view: 30.4 ns per entity, against 28.7 for
 the same loop written by hand and 388 for the host call per field it replaces.
 
