@@ -105,6 +105,14 @@ is derived from the compiler's token table, never the reverse. A grammar that ha
 highlights — it just highlights the wrong things — so nothing fails and nobody notices until
 somebody reads a keyword rendered as a variable and doubts their own file.
 
+**No source or host string enters generated JavaScript inside quotes an emitter typed.** Every one
+goes through `jsString`, which is `JSON.stringify` under a name that says what it is for. An
+identifier is a different category — the grammar already restricts one to `[A-Za-z_][A-Za-z0-9_]*`
+— and the two look identical at the point of use, which is why the serialiser is named rather than
+inlined. A module specifier was the one place this was got wrong: the parser keeps whatever sits
+between the quotes, a filesystem host resolves it as a path, and a directory holding an apostrophe
+produced output that would not parse.
+
 **A claim that can drift is asserted somewhere that fails.** Not in a document, not in review. Every
 file in `scripts/` is one claim held this way. If a change makes a new claim, it needs a new one.
 

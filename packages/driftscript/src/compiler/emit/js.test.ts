@@ -177,10 +177,14 @@ describe('the JavaScript backend', () => {
 });
 
 describe('emitted imports', () => {
+  const DOG =
+    'data Dog {\n    energy: f32 = 1\n}\n\nenum Mood {\n    Calm\n    Alert\n}\n\n' +
+    'fn rest(d: mut Dog) {\n    d.energy = 1\n}\n';
+
   const files: Record<string, string> = {
-    '/a/dog.drs':
-      'data Dog {\n    energy: f32 = 1\n}\n\nenum Mood {\n    Calm\n    Alert\n}\n\n' +
-      'fn rest(d: mut Dog) {\n    d.energy = 1\n}\n',
+    '/a/dog.drs': DOG,
+    /* A path a filesystem allows and a hand-quoted emitter could not survive. */
+    "/a/it's.drs": DOG,
   };
 
   const host = {
@@ -209,7 +213,8 @@ describe('emitted imports', () => {
    * cheap side of that fix; the alternative is teaching a guard to parse JavaScript strings, which
    * is a lot of machinery to make one assertion prettier.
    */
-  const importOf = (names: string, from: string) => `import { ${names} } from${' '}'${from}';`;
+  const importOf = (names: string, from: string) =>
+    `import { ${names} } from${' '}${JSON.stringify(from)};`;
 
   it('imports a function it calls, with the extension a bundler needs', () => {
     const code = emit(
@@ -221,6 +226,34 @@ describe('emitted imports', () => {
   it('imports an enum it reads', () => {
     const code = emit('import { Mood } from "./dog"\n\nfn pick() -> Mood {\n    return Mood.Calm\n}\n');
     expect(code).toContain(importOf('Mood', './dog.drs'));
+  });
+
+  it('serialises the specifier rather than quoting it', () => {
+    /*
+     * **A module specifier is source-derived text entering JavaScript syntax.** The parser takes
+     * whatever sits between the quotes and a filesystem host resolves it as a path, so a directory
+     * with an apostrophe in its name — which every filesystem allows — produced generated output
+     * that would not parse. The emitter had typed the quotes itself.
+     *
+     * Asserted by *parsing* the result rather than by matching a string: the failure is that the
+     * output is not JavaScript, and only a parser can say that.
+     */
+    const awkward = "./it's";
+    const code = emit(
+      `import { Dog, rest } from "${awkward}"\n\nfn go(d: mut Dog) {\n    rest(d)\n}\n`,
+    );
+
+    expect(code).toContain(importOf('rest', "./it's.drs"));
+
+    /*
+     * The literal is read back **by JavaScript**, not by a string match: the failure being guarded
+     * against is that the emitted text is not a JavaScript string at all, and only a parser can say
+     * so. `new Function` throws on a malformed literal, and its value is the path the host was
+     * asked for rather than one an escape sequence rewrote.
+     */
+    const line = code.split('\n').find((l) => l.startsWith('import ')) ?? '';
+    const literal = line.slice(line.indexOf('from ') + 'from '.length, -1);
+    expect(new Function(`return ${literal}`)()).toBe("./it's.drs");
   });
 
   it('emits no import for a name used only as a type', () => {

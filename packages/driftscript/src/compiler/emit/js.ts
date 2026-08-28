@@ -99,8 +99,19 @@ function jsName(name: string): string {
   return JS_RESERVED.has(name) ? `${name}$` : name;
 }
 
+/**
+ * A string as a JavaScript literal — the only way one may enter generated code.
+ *
+ * Named rather than inlined so a reader of an emitter can tell an *identifier*, which the grammar
+ * already restricts to `[A-Za-z_][A-Za-z0-9_]*`, from arbitrary *data*, which it does not. The two
+ * look identical at the point of use and need opposite treatment.
+ */
+function jsString(value: string): string {
+  return JSON.stringify(value);
+}
+
 function literal(value: number | string | boolean): string {
-  return typeof value === 'string' ? JSON.stringify(value) : String(value);
+  return typeof value === 'string' ? jsString(value) : String(value);
 }
 
 /**
@@ -951,8 +962,16 @@ export function emitJs(ir: IrModule, options: EmitOptions): EmitResult {
    */
   for (const imported of ir.imports) {
     if (imported.values.length === 0) continue;
+    /*
+     * **The specifier is serialised, not quoted.** It is source-derived text — the parser takes
+     * whatever sits between the quotes and a filesystem host resolves it as a path — so writing it
+     * between hand-typed quotes makes the author of a `.drs` file the author of a piece of
+     * generated JavaScript syntax. A path holding an apostrophe emitted output that would not
+     * parse, and the rule the fix generalises to is in `AGENTS.md`: no source or host string
+     * enters generated JavaScript inside quotes this file typed.
+     */
     writer.line_(
-      `import { ${imported.values.map(jsName).join(', ')} } from '${imported.module}.drs';`,
+      `import { ${imported.values.map(jsName).join(', ')} } from ${jsString(`${imported.module}.drs`)};`,
     );
   }
   if (ir.imports.some((i) => i.values.length > 0)) writer.write('\n');
