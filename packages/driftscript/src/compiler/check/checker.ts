@@ -34,6 +34,7 @@ import { visitStmts } from '../astWalk.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
 import { FLOAT, type CapabilityRegistry } from '../../registry/capability.ts';
 import { isPrimitive } from '../tokens.ts';
+import { namespaceOf } from '../namespace.ts';
 import {
   BOOL,
   ERROR,
@@ -700,7 +701,10 @@ class Checker {
        */
       if (decl.relative) continue;
 
-      const segment = decl.module.split('/').pop() ?? decl.module;
+      /* The name the source reaches this module through: what it said, or the path's last
+         segment. `namespace.ts` holds the derivation, and `ImportDecl.alias` says why there is
+         one to hold. */
+      const segment = decl.alias ?? namespaceOf(decl.module);
       const existing = this.namespaces.get(segment);
       /* Two imports of the same module merge their name lists, so a file may group its imports by
          what they are for rather than by which module they came from. */

@@ -602,6 +602,28 @@ export interface ImportDecl {
    * compiler's syntax.
    */
   readonly relative: boolean;
+  /**
+   * The name this module's capabilities are reached through, when the source says one.
+   *
+   * **Absent means the last segment of the path**, which is what every import meant before aliases
+   * existed and what nearly every import still means: `drift/physics` is `physics`.
+   *
+   * The alias exists because that derivation is not total. A specifier is a string and a namespace
+   * is an identifier, and `drift/2d` — a surface this language specifies — derives `2d`, which is
+   * a number followed by an identifier. There was no way to write a call into it: the bare name is
+   * undefined, the namespace does not lex, and neither `import *` nor a quoted segment is syntax
+   * here. A provider for it shipped in an engine on 2026-09-03 and was withdrawn again, because a
+   * capability nobody can spell is worse than a module the linker refuses by name.
+   *
+   * **So the fix is at the import rather than at the derivation.** A namespace the author writes is
+   * one they can read back, it needs no rule about how a bad segment becomes a good identifier, and
+   * it answers a second thing people had asked for on its own: two modules whose paths end in the
+   * same segment, and a name that reads better in one file than the path does.
+   *
+   * `DS0139` refuses an import whose segment cannot be an identifier and which named no alias, and
+   * says what to write.
+   */
+  readonly alias?: string;
   readonly span: Span;
 }
 

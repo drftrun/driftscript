@@ -61,6 +61,22 @@ An imported name is reached through its module: `import { play } from "drift/aud
 `audio.play(…)`, and `import { clamp } from "std/math"` as `math.clamp(…)`. The import is what makes
 the name available and what the linker checks; the prefix is what you write.
 
+**A file may name that prefix itself**, which matters when the path's own last segment is not one a
+call could be written with:
+
+```drs
+import { sprite } from "drift/2d" as sprites    // `2d.sprite(…)` does not lex; this does
+
+fn hud(batch: SpriteBatch) {
+    sprites.sprite(batch, 0, 10, 10, 32, 32)
+}
+```
+
+The alias is a name in your file and nothing else: the module string is still what the linker checks
+and still what reaches the host. Two modules whose paths end in the same segment are the other
+reason to reach for one. A module whose segment is not an identifier and which names no alias is
+refused at the import, in words, with the line to write — `DS0139`.
+
 ## Entities are language forms, not library calls
 
 ```drs

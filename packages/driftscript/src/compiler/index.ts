@@ -28,6 +28,7 @@ import { resolveGraph } from './modules/graph.ts';
 import { importedScope } from './modules/interface.ts';
 import { effectsAcross, importedFor } from './modules/effects.ts';
 import type { TargetManifest } from '../registry/manifest.ts';
+import { namespaceOf } from './namespace.ts';
 
 export type { Diagnostic, DiagnosticCode, Position } from './diagnostics.ts';
 export { formatDiagnostic, positionAt } from './diagnostics.ts';
@@ -427,6 +428,14 @@ export function compileDriftScript(source: string, options: CompileOptions): Com
   const chemistry = checkChemistryAnnotations(parsed.module.decls, filename);
   if (chemistry.length > 0) return failed(filename, source, chemistry);
 
+  /*
+   * **Keyed by the name this file calls the module, not by the module's own.** An IR callee is
+   * `${namespace}.${name}` as written, so a file that imported `drift/audio` under another name
+   * would miss every entry of a table keyed by the path — and miss it silently, since a lookup that
+   * finds nothing is a call this pass has no opinion about. `ir.namespaces` is the file's own
+   * answer and already carries both halves.
+   */
+  const aliases = new Map(ir.namespaces.map((namespace) => [namespace.module, namespace.alias]));
   const hot = hotDiagnostics(
     ir,
     options.registry === undefined
@@ -435,7 +444,7 @@ export function compileDriftScript(source: string, options: CompileOptions): Com
           options.registry
             .all()
             .map((capability) => [
-              `${capability.module.split('/').pop() ?? capability.module}.${capability.name}`,
+              `${aliases.get(capability.module) ?? namespaceOf(capability.module)}.${capability.name}`,
               { effects: capability.effects, allocates: capability.allocates },
             ]),
         ),

@@ -12,6 +12,85 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.11.0
+
+**A module this language specifies could not be called, and the reason was a derivation nobody had
+looked at.** A capability is reached through a namespace, and the namespace was the last segment of
+the import's path — `module.split('/').pop()`, in the checker, in the lowering and in the pass that
+builds the hot-path capability table. For `drift/2d`, a surface in `SPECIFIED_MODULES` since the
+language shipped, that segment is `2d`: a number followed by an identifier, which the lexer refuses
+before the checker sees the call.
+
+**It was found by building a provider for it.** An engine wired the module, ran a script at it, and
+got ``` `d` is not defined ``` from inside its own call — a message naming nothing an author could
+act on. Five spellings were tried against a real registry and every one failed:
+
+| written | answer |
+|---|---|
+| `sprite(batch, …)` after `import { sprite }` | `DS0205` — `sprite` is not defined |
+| `2d.sprite(batch, …)` | `DS0205` — `d` is not defined, then `DS0260` |
+| `import { sprite as quad }` | `DS0102` — expected `}` but found `as` |
+| `import * as g2d from "drift/2d"` | `DS0101` — expected `{` but found `*` |
+| `` `2d`.sprite(batch, …) `` | `DS0003` — unexpected character |
+
+`ui.layout(…)` and `terrain.heightAt(…)` compiled in the same harness, so the failure was the name
+and nothing else. The provider was withdrawn rather than shipped, because a capability nobody can
+spell is worse than a module the linker refuses by name: the refusal at least says so.
+
+### An import may name its own namespace
+
+```drs
+import { sprite } from "drift/2d" as sprites
+
+fn hud(batch: SpriteBatch) {
+    sprites.sprite(batch, 0, 10, 10, 32, 32)
+}
+```
+
+**The fix is at the import rather than at the derivation**, and that is the choice worth recording.
+A rule that turned a bad segment into a good identifier would be the language picking a name on the
+author's behalf, and every candidate rule is a guess somebody has to memorise. A namespace the
+author writes is one they can read back.
+
+It answers two things that had nothing to do with `drift/2d`: two modules whose paths end in the
+same segment, which previously merged into one namespace, and a name that reads better in one file
+than the path does. `as` was already a keyword, so this costs no new token and no grammar change.
+
+**The alias is a name in your file and nothing else.** The module string is still what the linker
+checks, still what `metadata.requires` reports, and still what the emitted `__bind` looks up on the
+host — so nothing a host implements changes, and a file that names no alias means exactly what it
+meant before.
+
+### `DS0139`, so the next one fails at the import
+
+A non-relative import whose namespace is not an identifier and which names no alias is refused where
+it is written, with the line to write:
+
+> `` `drift/2d` `` cannot be named directly, because `2d` is not an identifier. Import it with a
+> name: `from "drift/2d" as d2d`
+
+Relative specifiers are exempt: they name a file and bring their names in directly, so `./2d` is
+still a legal import of a legal file name. `DS0138` is the smaller sibling — `as` with nothing after
+it.
+
+**And the list is guarded.** `SPECIFIED_MODULES` may hold a segment that is not an identifier, and
+every one of them is now named in `link.test.ts`, so adding a second by accident fails there rather
+than waiting years for somebody to build a provider for it. Today the list is one entry long.
+
+### One thing was quietly wrong and is fixed with it
+
+The hot-path pass looks a capability up **by the callee written in the file**, and the table it
+looks in was keyed by the module's own last segment. With aliases that misses every renamed call —
+and misses it by finding nothing, which reads as a call the pass has no opinion about rather than as
+a lookup that went wrong. It is keyed by the file's own namespaces now. Without the fix, a `@hot`
+function calling `audio.play` through an alias would have compiled clean.
+
+`namespace.ts` holds the derivation and the identifier rule, in one place, because there were three
+copies of the first and none of the second.
+
+Twelve tests, over the parser, the end-to-end compile, the emitted `__bind`, the formatter's
+round-trip, the hot-path table and the specified list.
+
 ## 1.10.0
 
 **Nine semantic passes each carried their own recursive walk over the compiler's tree, and every one

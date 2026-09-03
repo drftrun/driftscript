@@ -104,6 +104,85 @@ describe('compileDriftScript', () => {
     expect(result.metadata.interfaceHash).not.toBe('');
   });
 
+  /*
+   * **A module reached through a name the file chose, end to end.**
+   *
+   * `drift/2d` is the surface that made aliases necessary: its namespace would be `2d`, which does
+   * not lex, so nothing could be written to call into it. The whole path has to agree on the new
+   * name — the checker resolves it, the lowering carries it, and the emitter binds the *module*
+   * behind it, so what reaches the host is still the path.
+   */
+  it('compiles a module through the namespace the import named', () => {
+    const registry = createRegistry();
+    registry.add(
+      defineCapability({
+        module: 'drift/2d',
+        name: 'sprite',
+        signature: 'fn(texture: i32) -> void',
+        params: [{ name: 'texture', type: 'i32' }],
+        returns: 'void',
+        effects: ['scene.write'],
+        deterministic: false,
+        doc: 'Put one quad in the batch.',
+        implementation: 'drift/2d.sprite',
+      }),
+    );
+
+    const result = compileDriftScript(
+      'import { sprite } from "drift/2d" as sprites\n\nfn hud() {\n    sprites.sprite(0)\n}\n',
+      { filename: 'a.drs', registry, host: singleFileHost(), mode: 'development' },
+    );
+
+    expect(result.diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
+    expect(result.metadata.requires).toEqual(['drift/2d']);
+    /* The alias is the source's name for it; the host is still handed the path. */
+    expect(result.code).toContain('sprites = $host["drift/2d"]');
+    expect(result.code).toContain('sprites.sprite(0)');
+  });
+
+  /*
+   * **The half that would have failed silently.** The hot-path pass looks a capability up by the
+   * callee written in the file, so a table keyed by the module's own last segment misses every
+   * aliased call — and misses it by finding nothing, which reads as a call it has no opinion about
+   * rather than as a lookup that went wrong. Asserted with an effect the rule actually refuses.
+   */
+  it('still refuses a hot path its capability was renamed in', () => {
+    const registry = createRegistry();
+    registry.add(
+      defineCapability({
+        module: 'drift/audio',
+        name: 'play',
+        signature: 'fn(slot: String) -> void',
+        params: [{ name: 'slot', type: 'String' }],
+        returns: 'void',
+        effects: ['audio.write'],
+        deterministic: false,
+        doc: 'Play a sound.',
+        implementation: 'AudioGraph.play',
+      }),
+    );
+
+    const source = (from: string, call: string) =>
+      `import { play } from "drift/audio"${from}\n\n@hot\nfn tick() {\n    ${call}("horn")\n}\n`;
+
+    const plain = compileDriftScript(source('', 'audio.play'), {
+      filename: 'a.drs',
+      registry,
+      host: singleFileHost(),
+      mode: 'development',
+    });
+    const renamed = compileDriftScript(source(' as sfx', 'sfx.play'), {
+      filename: 'a.drs',
+      registry,
+      host: singleFileHost(),
+      mode: 'development',
+    });
+
+    expect(plain.diagnostics.map((d) => d.code)).toContain('DS0401');
+    expect(renamed.diagnostics.map((d) => d.code)).toContain('DS0401');
+    expect(renamed.diagnostics.find((d) => d.code === 'DS0401')?.message).toContain('`sfx.play`');
+  });
+
   it('still stops on an error that appears beside a warning', () => {
     const registry = createRegistry();
     registry.add(

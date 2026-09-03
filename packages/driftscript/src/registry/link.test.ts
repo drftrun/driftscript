@@ -3,6 +3,7 @@ import { defineTarget } from './manifest.ts';
 import { createRegistry, defineCapability } from './capability.ts';
 import { SPECIFIED_MODULES, type LinkResult, linkCapabilities } from './link.ts';
 import { compileDriftScript, singleFileHost } from '../compiler/index.ts';
+import { isIdentifier, namespaceOf } from '../compiler/namespace.ts';
 
 const spans = new Map([['drift/animation', { start: 7, end: 24 }]]);
 
@@ -303,6 +304,40 @@ describe('the catalogue of specified surfaces', () => {
     }
     for (const unbuilt of ['drift/navigation', 'drift/behavior', 'drift/terrain']) {
       expect(SPECIFIED_MODULES).toContain(unbuilt);
+    }
+  });
+
+  /*
+   * **A specified module has to be writable, and one of them was not.**
+   *
+   * `drift/2d` was designed into this list and its namespace is the last segment of its path, so a
+   * call into it would have been `2d.sprite(...)` — a number followed by an identifier. An engine
+   * built the provider, wired it, and withdrew it again on 2026-09-03 rather than ship capabilities
+   * nobody could spell.
+   *
+   * Aliases fixed it at the import, and this is the other half: the list may hold a segment that is
+   * not an identifier, and every one of them must be **named here**, so that adding a second by
+   * accident fails rather than waiting for somebody to build a provider for it.
+   */
+  it('names every specified module whose namespace has to be written out', () => {
+    const needsAlias = SPECIFIED_MODULES.filter((module) => !isIdentifier(namespaceOf(module)));
+    expect(needsAlias).toEqual(['drift/2d']);
+  });
+
+  it('refuses each of them at the import unless the file names one', () => {
+    for (const module of SPECIFIED_MODULES.filter((m) => !isIdentifier(namespaceOf(m)))) {
+      const bare = compileDriftScript(`import { thing } from "${module}"\n\nfn f() {\n}\n`, {
+        filename: 'a.drs',
+        host: singleFileHost(),
+        mode: 'development',
+      });
+      expect(bare.diagnostics.map((d) => d.code)).toContain('DS0139');
+
+      const named = compileDriftScript(
+        `import { thing } from "${module}" as thing\n\nfn f() {\n}\n`,
+        { filename: 'a.drs', host: singleFileHost(), mode: 'development' },
+      );
+      expect(named.diagnostics.filter((d) => d.severity === 'error')).toEqual([]);
     }
   });
 });

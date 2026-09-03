@@ -70,6 +70,65 @@ describe('the parser', () => {
     expect(module.imports[0].names).toEqual(['play', 'stop', 'ambient']);
   });
 
+  it('parses a namespace the import names for itself', () => {
+    const { module, diagnostics } = parse(
+      'import { sprite } from "drift/2d" as sprites\n',
+      'a.drs',
+    );
+    expect(diagnostics).toEqual([]);
+    expect(module.imports[0]).toMatchObject({
+      module: 'drift/2d',
+      names: ['sprite'],
+      alias: 'sprites',
+    });
+  });
+
+  it('records no alias when the import names none, so the segment still means the segment', () => {
+    const { module } = parse('import { play } from "drift/audio"\n', 'a.drs');
+    expect(module.imports[0].alias).toBeUndefined();
+  });
+
+  it('takes a soft keyword as a namespace, the way it takes one as any other name', () => {
+    const { module, diagnostics } = parse('import { play } from "drift/audio" as state\n', 'a.drs');
+    expect(diagnostics).toEqual([]);
+    expect(module.imports[0].alias).toBe('state');
+  });
+
+  it('refuses `as` with nothing after it', () => {
+    const { diagnostics } = parse('import { play } from "drift/audio" as\n', 'a.drs');
+    expect(diagnostics[0].code).toBe('DS0138');
+  });
+
+  /*
+   * **The reason aliases exist**, asserted from the side that used to be silent. `drift/2d` is a
+   * surface this language specifies and its namespace would be `2d`, which lexes as a number
+   * followed by an identifier — so the failure used to arrive as ``\`d\` is not defined`` from
+   * inside the author's own call, naming nothing they could act on. It is refused at the import
+   * now, with the line to write.
+   */
+  it('refuses a module whose namespace is not an identifier, and says what to write', () => {
+    const { diagnostics } = parse('import { sprite } from "drift/2d"\n', 'a.drs');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].code).toBe('DS0139');
+    expect(diagnostics[0].message).toContain('`2d` is not an identifier');
+    expect(diagnostics[0].message).toContain('from "drift/2d" as d2d');
+  });
+
+  it('accepts the same module once it is named', () => {
+    const { diagnostics } = parse('import { sprite } from "drift/2d" as sprites\n', 'a.drs');
+    expect(diagnostics).toEqual([]);
+  });
+
+  /*
+   * A relative specifier brings its names in directly rather than through a namespace, so there is
+   * nothing to spell and nothing to refuse. `./2d` is a legal file name and this must not break it.
+   */
+  it('leaves a relative import alone, whatever its last segment looks like', () => {
+    const { diagnostics, module } = parse('import { Wave } from "./2d"\n', 'a.drs');
+    expect(diagnostics).toEqual([]);
+    expect(module.imports[0]).toMatchObject({ module: './2d', relative: true });
+  });
+
   it('skips comments rather than treating them as syntax', () => {
     const { module, diagnostics } = parse(
       '// a leading comment\ndata P {\n    /* inline */ a: f32 = 0\n}\n',

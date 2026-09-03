@@ -70,6 +70,13 @@ import { play } from "drift/audio"    // a host's. Has an effect. That host.
 A target declares which non-`std` modules it provides. The prefix in an import tells you which side
 of the line you are on, and the standard library is the side a target may not decline.
 
+An import may name its own prefix, which is what makes a module callable when its path does not end
+in an identifier:
+
+```drs
+import { sprite } from "drift/2d" as sprites    // `2d.sprite(…)` does not lex; this does
+```
+
 ## Entities are language forms
 
 ```drs

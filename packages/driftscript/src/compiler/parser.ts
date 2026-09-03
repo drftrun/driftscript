@@ -48,6 +48,7 @@ import type { Diagnostic, DiagnosticCode } from './diagnostics.ts';
 import { type Token, tokenize } from './lexer.ts';
 import { isPrimitive, isSoftKeyword } from './tokens.ts';
 import { DEFAULT_FIXED_STEPS_PER_SECOND, ratesDividing } from './target.ts';
+import { isIdentifier, namespaceOf, suggestedAlias } from './namespace.ts';
 
 export interface ParseResult {
   readonly module: Module;
@@ -335,15 +336,54 @@ class Parser {
     }
 
     const specifier = module.text.slice(1, -1);
+    /* `./` and `../` and nothing else. A bare specifier is a capability module, whoever provides
+       it — see `ImportDecl.relative` for why this is syntax rather than a lookup. */
+    const relative = specifier.startsWith('./') || specifier.startsWith('../');
+
+    let alias: string | undefined;
+    let end = module.end;
+    if (this.accept('keyword', 'as') !== null) {
+      const named = this.acceptIdentLike();
+      if (named === null) {
+        const found = this.peek();
+        this.report('DS0138', 'expected a name after `as`', {
+          start: found.start,
+          end: found.end,
+        });
+        this.resynchronise();
+        return null;
+      }
+      alias = named.text;
+      end = named.end;
+    }
+
+    /*
+     * **A namespace is an identifier and a specifier is a string, and the two do not always meet.**
+     * `drift/2d` derives `2d`, which lexes as a number followed by an identifier, so a call into it
+     * could not be written at all — the failure arrived as `\`d\` is not defined` from inside the
+     * author's own call, which names nothing they can act on. Refused here instead, at the import,
+     * with the line to write.
+     *
+     * Relative specifiers are exempt: they name a file and bring their names in directly rather
+     * than through a namespace, which is what `ImportDecl.relative` decides.
+     */
+    if (!relative && alias === undefined && !isIdentifier(namespaceOf(specifier))) {
+      this.report(
+        'DS0139',
+        `\`${specifier}\` cannot be named directly, because \`${namespaceOf(specifier)}\` is not an ` +
+          `identifier. Import it with a name: \`from "${specifier}" as ${suggestedAlias(specifier)}\``,
+        { start, end: module.end },
+      );
+      return null;
+    }
 
     return {
       kind: 'import',
       module: specifier,
       names,
-      /* `./` and `../` and nothing else. A bare specifier is a capability module, whoever provides
-         it — see `ImportDecl.relative` for why this is syntax rather than a lookup. */
-      relative: specifier.startsWith('./') || specifier.startsWith('../'),
-      span: { start, end: module.end },
+      relative,
+      ...(alias === undefined ? {} : { alias }),
+      span: { start, end },
     };
   }
 

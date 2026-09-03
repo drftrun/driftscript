@@ -38,6 +38,7 @@ import type {
 import type { CheckResult, ImportedScope } from '../check/checker.ts';
 import type { Access } from '../check/entities.ts';
 import { INTEGERS, type Type } from '../check/types.ts';
+import { namespaceOf } from '../namespace.ts';
 import type {
   IrComponent,
   IrData,
@@ -1102,7 +1103,7 @@ export function lower(
      * so out loud.
      */
     if (decl.relative) continue;
-    const alias = decl.module.split('/').pop() ?? decl.module;
+    const alias = decl.alias ?? namespaceOf(decl.module);
     if (namespaces.some((n) => n.alias === alias)) continue;
     namespaces.push({ alias, module: decl.module });
   }

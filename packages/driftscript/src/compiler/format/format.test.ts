@@ -73,6 +73,17 @@ describe('the formatter', () => {
     expect(semantics(formatted)).toEqual(semantics(messy));
   });
 
+  /*
+   * The formatter works from tokens, so a namespace an import names for itself flows through with
+   * no rule of its own — which is the property to assert rather than to assume, since the whole
+   * point of an alias is that it changes what a call is named.
+   */
+  it('keeps a namespace an import named, and does not move it', () => {
+    const source = 'import { sprite } from "drift/2d" as sprites\n\nfn hud() {\n    sprites.sprite(0)\n}\n';
+    expect(format(source).text).toBe(source);
+    expect(semantics(format(source).text)).toEqual(semantics(source));
+  });
+
   it('does not rewrite a wrapping operator into a checked one', () => {
     const source = 'fn f(a: u8, b: u8) -> u8 {\n    return a +% b\n}\n';
     const formatted = format(source).text;
