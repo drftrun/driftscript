@@ -1,10 +1,33 @@
-// A replicated actor. Does not link: no host provides `drift/network` yet.
+// A replicated actor.
 //
-// It is here so the networking semantics are written down before networking couples itself to the
-// state and task design — which is the design's own reason for specifying them early. A file that
-// cannot be written is a design that cannot be reviewed.
+// It was written before any host provided `drift/network`, so the networking semantics were on
+// record before networking could couple itself to the state and task design — which is the design's
+// own reason for specifying them early. A file that cannot be written is a design that cannot be
+// reviewed.
+//
+// **DriftEngine's Track J provided the module in 2026-09**, and this file was corrected to what the
+// surface actually is. Two things moved. Every capability takes the session it is about, the way
+// every other engine binding does; the sketch below used to call `network.replicate(x, y)` with no
+// session, because when it was written there was no handle to take. And a published value goes into
+// a numbered slot rather than being handed over positionally: a slot is an index into a table the
+// host sized, so a script and a host agree about what value 2 is without a schema on the wire.
+//
+// `@replicated` is checked from 1.13.0: it marks a component field a host publishes, and the
+// compiler asserts the field is a component's and holds a number.
 
-import { replicate, authority } from "drift/network"
+import { replicate, authority, self } from "drift/network"
+
+component RunnerState {
+    @replicated
+    x: f32 = 0
+
+    @replicated
+    y: f32 = 0
+
+    // Not replicated: stamina is the owner's business, and a peer that needed it would be a peer
+    // deciding something the owner already decided.
+    stamina: f32 = 100
+}
 
 data Runner {
     x: f32 = 0
@@ -19,6 +42,16 @@ fn step(runner: mut Runner, dx: f32, dy: f32, dt: f32) {
     runner.stamina -= dt
 }
 
-fn publish(runner: Runner) {
-    network.replicate(runner.x, runner.y)
+// Not `@deterministic`, and that is the whole shape of it: a send is not idempotent, and a
+// deterministic function is precisely the kind a rollback re-runs.
+fn publish(session: Session, runner: Runner) {
+    network.replicate(session, 0, runner.x)
+    network.replicate(session, 1, runner.y)
+}
+
+// Whether this peer's world is the truth. Fixed for the session's life, so a deterministic function
+// may read it.
+@deterministic
+fn owns(session: Session) -> bool {
+    return network.authority(session) && network.self(session) == 0
 }

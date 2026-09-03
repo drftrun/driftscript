@@ -21,6 +21,7 @@ import type { FnDecl } from './ast.ts';
 import { checkAiAnnotations } from './check/annotations.ts';
 import { checkUnits } from './check/units.ts';
 import { checkChemistryAnnotations } from './check/chemistry.ts';
+import { checkReplicatedFields } from './check/network.ts';
 import { hotDiagnostics } from './check/hot.ts';
 import type { CapabilityRegistry } from '../registry/capability.ts';
 import type { ModuleHost } from './modules/host.ts';
@@ -427,6 +428,11 @@ export function compileDriftScript(source: string, options: CompileOptions): Com
      language form, per `§20.7`. See `check/chemistry.ts` for why the element balance is not here. */
   const chemistry = checkChemistryAnnotations(parsed.module.decls, filename);
   if (chemistry.length > 0) return failed(filename, source, chemistry);
+
+  /* `@replicated`, checked against the field it sits on. See `check/network.ts` for why a `data`
+     record and a `String` are both refused, and why an `Entity` is not. */
+  const replicated = checkReplicatedFields(parsed.module.decls, filename);
+  if (replicated.length > 0) return failed(filename, source, replicated);
 
   /*
    * **Keyed by the name this file calls the module, not by the module's own.** An IR callee is

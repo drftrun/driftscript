@@ -316,6 +316,16 @@ export interface FieldDecl {
   readonly default?: Expr;
   /** `@editor(…)`, when the field carries one. Emitted onto the field's schema entry. */
   readonly editor?: EditorMeta;
+  /**
+   * `@replicated` — this field's value is one a host publishes to other peers.
+   *
+   * **An assertion the compiler checks and then erases**, in the same sense `@substance` is: it
+   * registers nothing, provides nothing, and a file carrying it links against a target with no
+   * networking exactly as it did before. What it buys is that a field a host is expected to
+   * replicate is checked for being *replicable* — a number rather than a record — at the
+   * declaration rather than by a value arriving as `NaN` on another machine.
+   */
+  readonly replicated?: boolean;
   readonly span: Span;
 }
 

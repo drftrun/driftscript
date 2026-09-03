@@ -55,6 +55,16 @@ const WIRED = new Set([
   'CampfireTending.drs',
   'EcsCoroutines.drs',
   'GuardBehaviour.drs',
+  /*
+   * **Moved here in 1.13.0**, when DriftEngine's Track J provided `drift/network`.
+   *
+   * It sat in the unwired half for as long as the module had no host, and the shape of the file was
+   * bent around that: it called `network.replicate(x, y)` with no session, because an unwired file
+   * is compiled with no registry and an opaque type it named would read as an *undeclared* type
+   * rather than as a surface nothing provides. Now that a host exists, the file describes the real
+   * surface and is checked against a description of it.
+   */
+  'NetworkReplicatedActor.drs',
   'PhysicsGrapple.drs',
   'TimedToggle.drs',
 ]);
@@ -104,6 +114,30 @@ const registry = () => {
         implementation: `${module}.${name}`,
       }),
     );
+
+  /* Track J's surface, mirroring `packages/script/src/bindings/network.ts`. The effect split is the
+     part worth mirroring exactly: `self` and `authority` are `network.read` and deterministic
+     because they are fixed for a session's life, and `replicate` is `network.write` and is not,
+     because a rollback re-runs a deterministic function and a send is not idempotent. */
+  r.addType({
+    module: 'drift/network',
+    name: 'Session',
+    doc: 'A networking session: who this peer is, and the scalars it publishes.',
+  });
+  define('drift/network', 'self', [{ name: 'session', type: 'Session' }], 'i32', ['network.read'], true);
+  define('drift/network', 'authority', [{ name: 'session', type: 'Session' }], 'bool', ['network.read'], true);
+  define(
+    'drift/network',
+    'replicate',
+    [
+      { name: 'session', type: 'Session' },
+      { name: 'slot', type: 'i32' },
+      { name: 'value', type: 'f32' },
+    ],
+    'void',
+    ['network.write'],
+    false,
+  );
 
   r.addType({ module: 'drift/audio', name: 'Sound', doc: 'A decoded sound, resolved from a slot.' });
   /* These four mirror DriftEngine's real definitions exactly. Where they last diverged, the
@@ -232,6 +266,7 @@ const registry = () => {
 };
 
 const FULL = defineTarget('full', [
+  'drift/network',
   'drift/audio',
   'drift/chemistry',
   'drift/ecs',

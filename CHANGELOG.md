@@ -12,6 +12,78 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.13.0
+
+**DS-8 is answered, which was the last refused phase and the only one that waited on a track.**
+
+DriftEngine's Track J built a networking host — a transport seam, a rewind loop, lockstep and an
+authoritative model — and DS-8 waited on exactly that. Three questions, and two of them turned out to
+have been answered years earlier by decisions made for other reasons.
+
+### The fixed clock already survived a rewind
+
+`runtime/clocks.ts` carried the open question in its own header: *"a deadline cannot express 'resume
+at step N' across a rewind. That is a host's to decide when it has a rollback loop to decide it
+against."*
+
+**It can, and it always could.** The fixed clock is a step count rather than seconds, so a deadline
+is an absolute step number and an absolute number means the same thing after the clock moves in
+either direction. A task waiting for step 500 is still waiting for step 500 after a rewind to 483.
+What the deferral was protecting against is a deadline held as a remaining duration, which would slip
+by the whole rewind every time; nothing here holds one.
+
+**The decision that made this work was made in DS-3**, when the fixed clock was given steps as its
+unit for a reason about replay, and it paid for itself five phases later. `clocks.test.ts` drives a
+host backwards by hand and asserts both halves. The header is corrected rather than left hedging.
+
+### `@replicated` means something
+
+It has been a lexer token since the design specified it and read by nothing. It now marks a component
+field a host publishes, and the compiler asserts two things: that it is a component's field rather
+than a record's, because a record passed between functions has no identity to replicate to; and that
+it holds a number, because a replication path carries scalars and anything richer needs a schema on
+the wire. An optional is refused too, since it needs a presence bit and a packet has no column for
+one. `Entity` is permitted with the caveat that whether a handle means the same thing at the other
+end depends on the host's model.
+
+**It registers nothing**, so a file carrying it links against a target providing no networking at all
+and behaves exactly as it did.
+
+### `network.write` stays outside the deterministic effects, and now for a reason
+
+The exclusion was a deferral on the condition that *the track that builds one is the one that can say
+whether its writes are the simulation or a consequence of it*. Track J's answer: it stays outside,
+and the reason is the rewind loop rather than the send. The tempting argument for admitting it is
+that publishing changes no simulation state, so a replay would publish the same thing. That is
+backwards once rollback exists — a `@deterministic` function is precisely the kind that gets re-run,
+and a send is not idempotent, so a correction replaying twelve ticks would put twelve duplicate
+messages on the wire.
+
+`network.read` stays inside, narrowed to the parts of a session that cannot vary with packet timing:
+which participant this is, and whether it is the authority.
+
+### The corpus file describes a real surface
+
+`NetworkReplicatedActor.drs` was written before any host existed and its shape was bent around that:
+it called `network.replicate(x, y)` with no session, because an unwired file is compiled with no
+registry and an opaque type it named would read as an undeclared type. It moves into the wired half,
+takes its session, publishes into numbered slots, and carries `@replicated` on the fields that
+cross.
+
+### What is refused, in writing
+
+Five of the six annotations the design sketched are refused rather than half-built, each with the
+condition that reverses it: `@ownerOnly` and `@interpolated` describe a host's model and a rendering
+policy; `@server` and `@client` partition a program by where it runs, which is a compilation-target
+question; and `@rollback` would let a script claim membership of a set the host owns.
+
+**And one row is left**: a rewind does not restore the scheduler. The layout it would need already
+exists, because `frameLayout` enumerates every slot a task's frame carries for the sake of hot
+patching and every task local is rewritten into a frame slot rather than a closure. `docs/DS-8.md`
+carries all of it.
+
+---
+
 ## 1.12.0
 
 **Two rows an engine consumer filed, and only one of them was a gap.**

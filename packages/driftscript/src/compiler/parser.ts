@@ -935,6 +935,7 @@ class Parser {
      */
     let pinned: string | undefined;
     let editor: EditorMeta | undefined;
+    let replicated = false;
     while (this.check('annotation')) {
       const at = this.next();
       if (at.text === '@editor') {
@@ -943,10 +944,20 @@ class Parser {
         editor = parsed;
         continue;
       }
+      /*
+       * `@replicated`, which takes no arguments: it says *that* a field crosses a wire and not how.
+       * How is a host's, and a host that took its instructions from a source file would be one
+       * whose replication policy could not be changed without recompiling every script.
+       */
+      if (at.text === '@replicated') {
+        replicated = true;
+        continue;
+      }
       if (at.text !== '@id') {
         this.report(
           'DS0130',
-          `\`${at.text}\` is not an annotation a field takes; \`@id\` and \`@editor\` are`,
+          `\`${at.text}\` is not an annotation a field takes; \`@id\`, \`@editor\` and ` +
+            '`@replicated` are',
           { start: at.start, end: at.end },
         );
         return null;
@@ -991,6 +1002,7 @@ class Parser {
       type,
       default: value,
       editor,
+      replicated: replicated ? true : undefined,
       span: { start: name.start, end },
     };
   }

@@ -47,11 +47,24 @@
  * caller that formats a `readClock` result for a person, which would print a step count as though
  * it were seconds — so nothing exports `readClock` beyond this package.
  *
- * **And what would make the whole shape wrong** is a host whose fixed clock can go backwards, which
- * is what rollback netcode does when it resimulates: a deadline cannot express "resume at step N"
- * across a rewind. That is a host's to decide when it has a rollback loop to decide it against,
- * and nothing here guards for it, because a guard written now would be a guess about an interface
- * that does not exist.
+ * **A host whose fixed clock goes backwards was the open question here, and it is answered.** The
+ * worry was rollback netcode: a host that resimulates moves its fixed clock backwards, and a
+ * deadline that could not express "resume at step N" across that would resume at the wrong step or
+ * never. DriftEngine's Track J built such a host in 2026-09, and the shape turned out to be right
+ * already — **because the fixed clock is a step count rather than seconds, a deadline is an
+ * absolute step number**, and an absolute number means the same thing after the clock moves in
+ * either direction. A task waiting for step 500 is still waiting for step 500 after a rewind to
+ * 483, and reaches it on the replayed step 500.
+ *
+ * What the deferral was protecting against is a deadline held as a *remaining duration*, which
+ * would be re-measured from wherever the clock happened to be and would slip by the whole rewind
+ * every time. Nothing here holds one. `clocks.test.ts` asserts both halves against a host driven
+ * backwards by hand.
+ *
+ * **What a rewind still does not restore is the scheduler's own state** — which tasks are alive and
+ * where each is suspended. That is `tasks.ts`'s to answer rather than this file's, and it is a row
+ * rather than a guard: the layout it would need already exists, because `frameLayout` enumerates
+ * every slot a task's frame carries and a hot patch already depends on it.
  */
 
 /** Which of the loop's three clocks. */

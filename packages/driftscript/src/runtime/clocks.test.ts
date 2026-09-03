@@ -130,3 +130,69 @@ describe('a deadline', () => {
     expect(deadlineAfter('wall', 1.5)).toBe(6.5);
   });
 });
+
+/**
+ * A host whose fixed clock goes backwards, which is what rollback netcode does when it resimulates.
+ *
+ * **This file's own header doubted it would work**: *"what would make the whole shape wrong is a
+ * host whose fixed clock can go backwards ... a deadline cannot express 'resume at step N' across a
+ * rewind. That is a host's to decide when it has a rollback loop to decide it against."* A host now
+ * has one, and the answer is that the shape was already right — because the fixed clock is a *step
+ * count* rather than seconds, a deadline is an absolute step number, and an absolute number means
+ * the same thing after the clock moves in either direction.
+ *
+ * What the deferral was really protecting against is a deadline expressed as a *remaining duration*,
+ * which is what the frame and wall clocks have. Those do not rewind and are not simulation, so
+ * nothing there needs to change either.
+ *
+ * The comment is corrected in `clocks.ts` and this is what makes the correction an assertion.
+ */
+describe('a fixed deadline across a rewind', () => {
+  beforeEach(() => {
+    clearClockSource();
+  });
+
+  it('still names the same step after the clock goes backwards', () => {
+    let steps = 480;
+    setClockSource({
+      fixedSteps: () => steps,
+      fixedStep: () => 1 / 60,
+      frame: () => 0,
+      wall: () => 0,
+    });
+
+    /* A task at step 480 awaits a third of a second: step 500. */
+    const deadline = deadlineAfter('fixed', 20 / 60);
+    expect(deadline).toBe(500);
+
+    /* A correction arrives and the host replays from 483. */
+    steps = 483;
+    expect(readClock('fixed')).toBe(483);
+    expect(readClock('fixed') >= deadline).toBe(false);
+
+    /* Replaying forward reaches it at exactly the step it always named. */
+    steps = 499;
+    expect(readClock('fixed') >= deadline).toBe(false);
+    steps = 500;
+    expect(readClock('fixed') >= deadline).toBe(true);
+  });
+
+  it('is not re-measured from wherever the clock happens to be', () => {
+    let steps = 100;
+    setClockSource({
+      fixedSteps: () => steps,
+      fixedStep: () => 1 / 60,
+      frame: () => 0,
+      wall: () => 0,
+    });
+
+    const deadline = deadlineAfter('fixed', 1);
+    expect(deadline).toBe(160);
+
+    /* A relative deadline would now be sixty steps away from *here* rather than from where it was
+       set, and a task would wait a second longer for every rewind. */
+    steps = 40;
+    expect(deadline - readClock('fixed')).toBe(120);
+  });
+});
+

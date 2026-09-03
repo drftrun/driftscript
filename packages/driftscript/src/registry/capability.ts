@@ -98,9 +98,23 @@ export type Effect =
  * dropped had to leave the fixed step to do it, compute the route in an ordinary system, and hand
  * the result back in.
  *
- * `physics.write`, `behavior.write` and `network.write` stay outside, and that is a deferral rather
- * than a judgement: each belongs to a track that has not shipped, and the track that builds one is
- * the one that can say whether its writes are the simulation or a consequence of it.
+ * `physics.write` and `behavior.write` stay outside, and that is a deferral rather than a
+ * judgement: each belongs to a track that has not shipped, and the track that builds one is the one
+ * that can say whether its writes are the simulation or a consequence of it.
+ *
+ * **`network.write` was a deferral of the same kind and is now a judgement.** DriftEngine's Track J
+ * built the host in 2026-09 and answered it: the effect stays outside, and the reason is the rewind
+ * loop rather than the send. The tempting argument for admitting it is that publishing a value
+ * changes no simulation state, so a replay would publish the same thing and nothing would drift.
+ * That is backwards once rollback exists — **a `@deterministic` function is precisely the kind that
+ * gets re-run**, over ticks that have already happened, and a send is not idempotent. A correction
+ * replaying twelve ticks would put twelve duplicate messages on the wire.
+ *
+ * `network.read` stays inside, and the same track narrowed what a host should put under it: only
+ * the parts of a session that cannot vary with packet timing. Which participant this is and whether
+ * it is the authority are fixed when a session is created. A confirmed-input watermark is not, and
+ * a host registering one under `network.read` would be handing a `@deterministic` system a number
+ * that differs between a run and its replay.
  *
  * **A deferral is not a blocker**, which is worth saying because it reads like one. A host ships the
  * track by registering its capabilities with `deterministic: false`; nothing refuses that. What is
