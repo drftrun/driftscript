@@ -87,10 +87,20 @@ export type Effect =
  * and heating a log is the canonical operation of the package. A rule that refused it to a
  * `@deterministic` function would refuse the thing the annotation exists to describe.
  *
- * `physics.write`, `navigation.write`, `behavior.write` and `network.write` stay outside, and that
- * is a deferral rather than a judgement: each belongs to a track that has not shipped, and the
- * track that builds one is the one that can say whether its writes are the simulation or a
- * consequence of it.
+ * **`navigation.write` is inside as of 1.12.0, and it came in on the condition this paragraph set.**
+ * The deferral below said the track that builds an effect is the one that can answer for its replay
+ * behaviour; navigation shipped a graph, an A* over it and a follower, so it can. Three things had
+ * to hold and all three do: a route is a function of the graph and its two endpoints, so it reads no
+ * clock and no entropy; the search **breaks ties on the node index** rather than on heap order,
+ * which its own source calls arbitrary but stable, so two runs and two machines agree; and the
+ * `NavPath` written into is simulation state in the sense `ecs.write` was admitted on, not a view of
+ * it. What it unblocks is the case that reported this: an agent that has to re-path because a bridge
+ * dropped had to leave the fixed step to do it, compute the route in an ordinary system, and hand
+ * the result back in.
+ *
+ * `physics.write`, `behavior.write` and `network.write` stay outside, and that is a deferral rather
+ * than a judgement: each belongs to a track that has not shipped, and the track that builds one is
+ * the one that can say whether its writes are the simulation or a consequence of it.
  *
  * **A deferral is not a blocker**, which is worth saying because it reads like one. A host ships the
  * track by registering its capabilities with `deterministic: false`; nothing refuses that. What is
@@ -110,6 +120,7 @@ export const DETERMINISTIC_EFFECTS: ReadonlySet<Effect> = new Set<Effect>([
   'chemistry.read',
   'chemistry.write',
   'navigation.read',
+  'navigation.write',
   'behavior.read',
   'network.read',
   'persistence.read',

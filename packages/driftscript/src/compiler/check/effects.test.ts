@@ -39,6 +39,22 @@ const registry = () => {
   );
   r.add(
     defineCapability({
+      module: 'drift/navigation',
+      name: 'route',
+      signature: 'fn(path: NavPath, graph: NavGraph) -> bool',
+      params: [
+        { name: 'path', type: 'NavPath' },
+        { name: 'graph', type: 'NavGraph' },
+      ],
+      returns: 'bool',
+      effects: ['navigation.write'],
+      deterministic: true,
+      doc: 'Search the graph and write the path.',
+      implementation: 'NavSearch.route',
+    }),
+  );
+  r.add(
+    defineCapability({
       module: 'drift/random',
       name: 'unit',
       signature: 'fn(seed: u32) -> f32',
@@ -153,6 +169,22 @@ describe('@deterministic, grounded on the boundary the engine already draws', ()
     const source =
       'import { wallClock } from "drift/time"\n\n@deterministic\nfn now() -> f32 {\n    return time.wallClock()\n}\n';
     expect(codesOf(source)).toContain('DS0261');
+  });
+
+  /*
+   * **Admitted in 1.12.0, on the condition the deferral itself set**: the track that builds an
+   * effect is the one that can answer for its replay behaviour, and navigation shipped.
+   *
+   * What a consumer can observe is exactly this — whether a `@deterministic` function may compute a
+   * route — so that is what is asserted, rather than the membership of the set. The three
+   * properties it came in on are the host's to keep: a route is a function of the graph and its two
+   * endpoints, the search breaks ties on the node index rather than on heap order, and the path
+   * written into is simulation state.
+   */
+  it('allows a route to be computed, which is why navigation.write came inside', () => {
+    const source =
+      'import { route } from "drift/navigation"\n\n@deterministic\nfn repath(path: NavPath, graph: NavGraph) -> bool {\n    return navigation.route(path, graph)\n}\n';
+    expect(codesOf(source)).toEqual([]);
   });
 
   it('refuses audio, because the engine places it outside the boundary', () => {

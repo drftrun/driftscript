@@ -12,6 +12,64 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.12.0
+
+**Two rows an engine consumer filed, and only one of them was a gap.**
+
+### `navigation.write` is inside the simulation boundary
+
+`DETERMINISTIC_EFFECTS` held eleven effects and this was not one, so a `@deterministic` system could
+steer along a route and could not compute one. An agent that had to re-path — because a bridge
+dropped, because a door shut — left the fixed step to do it, computed the route in an ordinary
+system, and handed the result back in.
+
+**It came in on the condition the deferral itself set.** That paragraph said `physics.write`,
+`navigation.write`, `behavior.write` and `network.write` stay outside because each belongs to a track
+that has not shipped, and *the track that builds one is the one that can say whether its writes are
+the simulation or a consequence of it*. Navigation shipped: a graph, an A* over it, and a follower.
+
+Three things had to hold and all three do. A route is a function of the graph and its two endpoints,
+so it reads no clock and no entropy. The search **breaks ties on the node index** rather than on heap
+order — its own source calls that arbitrary but stable, and it is there precisely so two runs and two
+machines agree. And the path written into is simulation state in the sense `ecs.write` was admitted
+on, not a view of it.
+
+The other three stay outside, unchanged, for the reason they always did.
+
+**What this changes for a host**: nothing it must do. A capability declaring `navigation.write` with
+`deterministic: true` was refused at `defineCapability` — before this, that call threw — and is now
+accepted. Nothing that compiled before compiles differently.
+
+### An undefined name says where it is defined
+
+**A consumer concluded this language had no maths.** They reached for `floor`, `sin` and `cos`, got
+three bare `DS0205 is not defined`, read the `drift/*` module list, found no arithmetic in it, and
+wrote their behaviour around the gap — raising a flag their host answered, one call per decision.
+The absence was filed as a language row on two of their documents.
+
+**It was never absent.** `std/math` has `abs`, `min`, `max`, `clamp`, `lerp`, `floor`, `ceil`,
+`round`, `sqrt`, `sin`, `cos`, `atan2` and `exp`, and `%` is an operator. Every host has it
+unconditionally: `STD_MODULES` is *provided* rather than claimed, and a manifest may not even list
+one. The compiler knew where `floor` lived at the moment it said the name was not defined, and said
+nothing about it.
+
+So `DS0205` now names the module:
+
+```
+`floor` is not defined. `floor` is defined in `std/math`; import it to use it here.
+```
+
+Exact matches only, and only modules the target actually has. A near-miss belongs to the import path,
+where a suggestion already runs against one named module; here the question is *which* module, and a
+confident wrong guess sends somebody to the wrong import. A name nothing defines keeps the message it
+had.
+
+**Bare `DS0205` was not wrong, it was incomplete**, and the cost of the missing half was a consumer
+routing every arithmetic decision back through their host, and a language row on two documents for a
+module that already existed.
+
+---
+
 ## 1.11.0
 
 **A module this language specifies could not be called, and the reason was a derivation nobody had

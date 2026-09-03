@@ -2216,7 +2216,11 @@ class Checker {
           );
           return this.record(expr, ERROR);
         }
-        this.report('DS0205', `\`${expr.name}\` is not defined`, expr.span);
+        this.report(
+          'DS0205',
+          `\`${expr.name}\` is not defined.${this.definedIn(expr.name)}`,
+          expr.span,
+        );
         return this.record(expr, ERROR);
       }
 
@@ -2385,6 +2389,41 @@ class Checker {
       return ERROR;
     }
     return declared;
+  }
+
+
+  /**
+   * Where an undefined name *is* defined, when a module this target has declares one.
+   *
+   * **This exists because a consumer concluded the language had no maths.** They reached for
+   * `floor`, `sin` and `cos`, got three bare `DS0205`s, read the `drift/*` module list, found no
+   * maths in it and wrote their behaviour around the gap — filing the absence as a language row. It
+   * was never absent: `std/math` has all three and every host gets it unconditionally, because
+   * `STD_MODULES` is provided rather than claimed. The compiler knew that at the moment it said the
+   * name was not defined, and said nothing.
+   *
+   * So the diagnostic names the module. **Bare `DS0205` was not wrong, it was incomplete**, and the
+   * cost of the missing half was a consumer routing every arithmetic decision back through their
+   * host and a row on two engine documents.
+   *
+   * Only an exact name match, and only a module the target actually has. A near-miss suggestion
+   * belongs to the import path, where `suggestion` already does it against one named module; here
+   * the question is *which* module, and guessing at that would send somebody to the wrong import.
+   */
+  private definedIn(name: string): string {
+    if (this.registry === undefined) return '';
+    const modules = new Set<string>();
+    for (const capability of this.registry.all()) {
+      if (capability.name === name) modules.add(capability.module);
+    }
+    if (modules.size === 0) return '';
+    /* Sorted so the message is the same on two machines, and `std/` first: those are provided by
+       every host, so they are the answer a reader can act on without checking their target. */
+    const named = [...modules].sort((a, b) =>
+      a.startsWith('std/') === b.startsWith('std/') ? a.localeCompare(b) : a.startsWith('std/') ? -1 : 1,
+    );
+    const list = named.map((m) => `\`${m}\``).join(' or ');
+    return ` \`${name}\` is defined in ${list}; import it to use it here.`;
   }
 
   /**
@@ -2606,7 +2645,11 @@ class Checker {
       if (scope.lookup(name) !== undefined) {
         this.report('DS0261', `\`${name}\` is a value, not a function`, expr.callee.span);
       } else {
-        this.report('DS0205', `\`${name}\` is not defined`, expr.callee.span);
+        this.report(
+          'DS0205',
+          `\`${name}\` is not defined.${this.definedIn(name)}`,
+          expr.callee.span,
+        );
       }
       for (const arg of expr.args) this.checkExpr(arg, scope);
       return ERROR;

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parse } from '../parser.ts';
 import { check } from './checker.ts';
+import { createRegistry } from '../../registry/capability.ts';
+import { MATH_CAPABILITIES } from '../../std/math.ts';
 
 const checkSource = (source: string) => check(parse(source, 'a.drs').module, 'a.drs');
 
@@ -356,5 +358,39 @@ describe('a numeric literal in a binary operation', () => {
   it('keeps the literal comparable on both sides too', () => {
     expect(codes3('fn f(a: f64) -> bool {\n    return 1 < a\n}\n')).toEqual([]);
     expect(codes3('fn f(a: f64) -> bool {\n    return a < 1\n}\n')).toEqual([]);
+  });
+});
+
+/**
+ * Where an undefined name is defined, when the target has a module defining one.
+ *
+ * **This is the diagnostic a consumer needed and did not get.** They reached for `floor`, `sin` and
+ * `cos`, got three bare "is not defined", read the `drift/*` module list, found no maths in it and
+ * concluded the language had none — filing the absence as a language row on two engine documents.
+ * `std/math` had all three the whole time, and every host gets it whether or not its manifest says
+ * so. The compiler knew that at the moment it said the name was undefined.
+ */
+describe('an undefined name that some module does define', () => {
+  const withMath = (source: string) => {
+    const registry = createRegistry();
+    for (const capability of MATH_CAPABILITIES) registry.add(capability);
+    return check(parse(source, 'a.drs').module, 'a.drs', registry);
+  };
+
+  it('names the module, so a reader knows what to import', () => {
+    const { diagnostics } = withMath('fn turn(c: f32) -> f32 {\n    return floor(c)\n}\n');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].code).toBe('DS0205');
+    expect(diagnostics[0].message).toContain('`std/math`');
+  });
+
+  /*
+   * A name nothing defines keeps the message it had. The hint is an addition to `DS0205`, not a
+   * replacement for it, and a reader of an ordinary typo should not be sent looking for a module.
+   */
+  it('says nothing extra about a name no module defines', () => {
+    const { diagnostics } = withMath('fn turn(c: f32) -> f32 {\n    return wobble(c)\n}\n');
+    expect(diagnostics[0].code).toBe('DS0205');
+    expect(diagnostics[0].message).not.toContain('is defined in');
   });
 });
