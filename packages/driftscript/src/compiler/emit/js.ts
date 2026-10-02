@@ -197,6 +197,29 @@ class Writer {
  */
 const NONE = "{ tag: 'none' }";
 
+/**
+ * The module constant one of a host enum's variants is read from.
+ *
+ * `$` separates the two names because neither can contain one, so the preamble can split them
+ * back apart. One frozen object per variant the module names, made once at load, so a comparison
+ * in a system allocates nothing.
+ */
+function hostVariantName(enumName: string, variant: string): string {
+  return `$H_${enumName}$${variant}`;
+}
+
+const HOST_VARIANT = /\$H_([A-Za-z_][A-Za-z0-9_]*)\$([A-Za-z0-9]+)/g;
+
+function hostVariantPreamble(body: string): string {
+  const named = [...new Set([...body.matchAll(HOST_VARIANT)].map((m) => m[0]))].sort();
+  return named
+    .map((name) => {
+      const variant = name.slice(name.lastIndexOf('$') + 1);
+      return `const ${name} = Object.freeze({ tag: '${variant}' });\n`;
+    })
+    .join('');
+}
+
 function emitExprText(expr: IrExpr): string {
   switch (expr.kind) {
     case 'const':
@@ -213,6 +236,8 @@ function emitExprText(expr: IrExpr): string {
       return `$v${expr.depth}_${expr.view}.${expr.field}[$i${expr.depth}_${expr.view}]`;
     case 'local':
       return jsName(expr.name);
+    case 'hostVariant':
+      return hostVariantName(expr.enumName, expr.variant);
     case 'field':
       return `${emitExprText(expr.target)}.${expr.name}`;
     case 'optionalField':
@@ -321,9 +346,37 @@ function conversionCall(expr: Extract<IrExpr, { kind: 'call' }>): string | null 
   return null;
 }
 
+/**
+ * Whether `==` on this type has to compare contents.
+ *
+ * Every value the language makes that is not a number, a string or a `bool` is an object in the
+ * emitted JavaScript: a variant, an option, a result, a record, a list. JavaScript's `==` compares
+ * those by identity, which is the wrong answer for each of them: two `Shape.Circle(2)` are the same
+ * shape, and a variant has to equal itself after a hot reload has replaced the module that made it
+ * and after a save has rebuilt it from text. A host's opaque value is the exception, compared by
+ * identity, because a script has no contents of it to compare.
+ */
+function comparesContents(type: IrType): boolean {
+  switch (type.kind) {
+    case 'enum':
+    case 'list':
+    case 'option':
+    case 'result':
+      return true;
+    case 'data':
+      return type.opaque !== true;
+    default:
+      return false;
+  }
+}
+
 function emitBinary(expr: Extract<IrExpr, { kind: 'binary' }>): string {
   const left = emitExprText(expr.left);
   const right = emitExprText(expr.right);
+
+  if ((expr.op === '==' || expr.op === '!=') && comparesContents(expr.left.type)) {
+    return `${expr.op === '!=' ? '!' : ''}$eq(${left}, ${right})`;
+  }
 
   const range = expr.type.kind === 'int' ? INTEGER_RANGE[expr.type.name] : undefined;
 
@@ -635,11 +688,14 @@ function emitData(writer: Writer, data: IrData): void {
 }
 
 /**
- * An enum becomes a frozen object of tag strings, and a payload variant becomes a constructor.
+ * An enum becomes a frozen object of variants, each `{ tag: 'Name' }`, and a payload variant becomes
+ * a constructor.
  *
- * Strings rather than integers because a debugger and a saved state both show them, and because a
- * stable-across-versions representation is what a schema migration will need. Frozen because a
- * consumer reassigning a variant would break every `match` at once, silently.
+ * A tag is a string rather than an integer because a debugger and a saved state both show it, and
+ * because a stable-across-versions representation is what a schema migration will need. Frozen
+ * because a consumer reassigning a variant would break every `match` at once, silently. Nothing
+ * may depend on a variant being *this* object: `match` and `==` both read the tag, because a hot
+ * reload makes a second object for every variant and a save rebuilds one from text.
  */
 function emitEnum(writer: Writer, decl: IrEnum): void {
   writer.mark(decl.span.start);
@@ -965,6 +1021,29 @@ const HELPERS: Readonly<Record<string, string>> = {
   const t = Math.trunc(v);
   return t < lo || t > hi ? { tag: 'none' } : { tag: 'some', value: t };
 }`,
+  /*
+   * Equality by contents, for the values `comparesContents` names.
+   *
+   * A variant compares by its tag and then its payload, so a variant made by another instance of
+   * its module, or read back from a save, is the variant it names. A record and a list compare
+   * field by field and element by element. Anything that is not a plain object or an array is a
+   * host's value inside a record, and compares by identity, as it does at the top level.
+   */
+  $eq: `function $eq(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!$eq(a[i], b[i])) return false;
+    return true;
+  }
+  const plain = Object.getPrototypeOf(a);
+  if ((plain !== Object.prototype && plain !== null) || Object.getPrototypeOf(b) !== plain) return false;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) if (!(key in b) || !$eq(a[key], b[key])) return false;
+  return true;
+}`,
   $try: `function $try(v) {
   if (v.tag === 'Ok' || v.tag === 'some') return v.value;
   throw { $drift: true, value: v };
@@ -1136,7 +1215,9 @@ export function emitJs(ir: IrModule, options: EmitOptions): EmitResult {
      does plain float arithmetic free of integer machinery. Detected by name in the output rather
      than by walking the IR again: the emitter is the only thing that writes these names. */
   const used = Object.keys(HELPERS).filter((name) => body.includes(`${name}(`));
-  const preamble = used.length === 0 ? '' : `${used.map((n) => HELPERS[n]).join('\n\n')}\n\n`;
+  const helpers = used.length === 0 ? '' : `${used.map((n) => HELPERS[n]).join('\n\n')}\n\n`;
+  const variants = hostVariantPreamble(body);
+  const preamble = helpers + (variants === '' ? '' : `${variants}\n`);
 
   const shapes = Object.fromEntries(ir.data.map((d) => [d.name, d.fields.map((f) => f.name)]));
   /*

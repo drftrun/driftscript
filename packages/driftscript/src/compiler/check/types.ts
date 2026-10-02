@@ -48,12 +48,22 @@ export type Type =
        * checker. Chains are finite because a cycle is refused before this is ever set.
        */
       readonly base?: Type;
+      /**
+       * A host's value, which a script holds and passes on but cannot see inside.
+       *
+       * Its own flag because it shares `data`'s shape everywhere else (no fields a script can read)
+       * and differs in one place: `==` compares it by identity, since a script has no contents to
+       * compare, where a record is compared by what it holds.
+       */
+      readonly opaque?: true;
     }
   | {
       readonly kind: 'enum';
       readonly name: string;
       /** Variant name to its payload type, or `null` for a variant that carries nothing. */
       readonly variants: ReadonlyMap<string, Type | null>;
+      /** Declared by the host's registry, not by a script, so no module exports its variants. */
+      readonly host?: true;
     }
   /**
    * An entity handle — what a query loop binds.

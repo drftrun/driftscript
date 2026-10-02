@@ -35,7 +35,8 @@ export type IrType =
    * which is what it is.
    */
   | { readonly kind: 'entity' }
-  | { readonly kind: 'data'; readonly name: string }
+  /** `opaque` for a host's value, which `==` compares by identity; see `Type`'s `data`. */
+  | { readonly kind: 'data'; readonly name: string; readonly opaque?: true }
   | { readonly kind: 'enum'; readonly name: string }
   /** `List<T>`, which every backend represents as its own array type. */
   | { readonly kind: 'list'; readonly of: IrType }
@@ -50,6 +51,20 @@ export type IrExpr =
       readonly span: Span;
     }
   | { readonly kind: 'local'; readonly name: string; readonly type: IrType; readonly span: Span }
+  /**
+   * `Contact.Began`, a variant of an enum the host declared.
+   *
+   * Its own node because the script's module has no object to read it from: a script's own enum is
+   * an exported constant and an imported one is an import, and a host's is neither. A backend makes
+   * one constant per variant the module names.
+   */
+  | {
+      readonly kind: 'hostVariant';
+      readonly enumName: string;
+      readonly variant: string;
+      readonly type: IrType;
+      readonly span: Span;
+    }
   /**
    * `e.Hunger.value` — one field of one component of an entity a query loop bound.
    *

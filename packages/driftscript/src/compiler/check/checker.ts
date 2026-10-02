@@ -450,7 +450,19 @@ class Checker {
   }
 
   private lookupEnum(name: string): Type | undefined {
-    return this.enums.get(name) ?? this.imported?.enums.get(name);
+    return this.enums.get(name) ?? this.imported?.enums.get(name) ?? this.hostEnum(name);
+  }
+
+  /** An enum the host's registry declares, after the script's own names, which shadow it. */
+  private hostEnum(name: string): Type | undefined {
+    const variants = this.registry?.getType(name)?.variants;
+    if (variants === undefined) return undefined;
+    return {
+      kind: 'enum',
+      name,
+      variants: new Map(variants.map((variant) => [variant, null])),
+      host: true,
+    };
   }
 
   private lookupFn(name: string): FnSignature | undefined {
@@ -3062,7 +3074,7 @@ class Checker {
     if (declared !== undefined) return declared;
 
     const opaque = this.registry?.getType(name);
-    if (opaque !== undefined) return { kind: 'data', name, fields: new Map() };
+    if (opaque !== undefined) return { kind: 'data', name, fields: new Map(), opaque: true };
 
     this.report('DS0237', `\`${name}\` is not a type this host registered`, span);
     return ERROR;
@@ -3457,7 +3469,7 @@ class Checker {
      * could then never change.
      */
     const opaque = this.registry?.getType(ref.name);
-    if (opaque !== undefined) return { kind: 'data', name: ref.name, fields: new Map() };
+    if (opaque !== undefined) return { kind: 'data', name: ref.name, fields: new Map(), opaque: true };
 
     /*
      * `World` resolves with no registry, because a query loop has to type without a host.
@@ -3473,7 +3485,7 @@ class Checker {
      * token table. **What would make it wrong** is a second host type the language needed to know
      * about, at which point this is a table rather than a branch.
      */
-    if (ref.name === 'World') return { kind: 'data', name: 'World', fields: new Map() };
+    if (ref.name === 'World') return { kind: 'data', name: 'World', fields: new Map(), opaque: true };
 
     this.report('DS0204', `\`${ref.name}\` is not a type this module declares or imports`, ref.span);
     return ERROR;

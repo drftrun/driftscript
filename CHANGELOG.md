@@ -12,6 +12,32 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.15.0
+
+**`==` compares what two values hold, so a variant still equals itself after a hot reload.**
+
+`==` and `!=` were JavaScript's own, and every value the language makes that is not a number, a
+string or a `bool` is an object in the emitted code, which JavaScript compares by identity. Two
+`Shape.Circle(2)` were unequal. A hot reload makes every variant a new object, so a record kept its
+old `Phase.Playing`, the new module compared it with its own, and `if round.phase != Phase.Playing
+{ return }` returned on every call after the first save. A variant read back from a save never
+equalled anything. `match` reads the tag, so it was right all along.
+
+A variant now compares by its tag and its payload, an option or a result by its case and value, a
+record field by field and a list element by element. A host's opaque value has nothing a script can
+see inside it, so it still compares by identity. Numbers, strings and `bool`s emit as before.
+
+**A host can declare an enum.** `OpaqueType` gains `variants`, and a type registered with them is an
+enum: a script writes `Contact.Began`, compares it and matches on it, and a `match` has to cover
+every variant. The capability returns `{ tag: 'Began' }`. Until now a capability whose answer was
+one of a few things could only return a number, with a sentence saying what each number meant, and
+every script restated that sentence as constants nothing checked. A variant has to start with a
+capital and appear once, and an enum needs at least one, all refused at registration. A script's
+own enum of the same name wins inside that script. The capability file carries the variants, so a
+language server reads them from the file the build does.
+
+---
+
 ## 1.14.0
 
 **A component's declared values reach the host, so an entity made without a field gets the value

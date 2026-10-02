@@ -266,9 +266,10 @@ function rewriteExpr(expr: IrExpr, bound: ReadonlySet<string>): IrExpr {
         span: expr.span,
       };
     case 'const':
+    case 'hostVariant':
     case 'componentField':
-      /* A literal and a column read, neither of which can name a task binding: a `componentField`
-         resolves to a view and an index the loop owns. */
+      /* A literal, a host's variant and a column read, none of which can name a task binding: a
+         `componentField` resolves to a view and an index the loop owns. */
       return expr;
     case 'field':
     case 'optionalField':

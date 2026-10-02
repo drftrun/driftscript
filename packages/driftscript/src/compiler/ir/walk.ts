@@ -33,6 +33,7 @@ export function childExprs(expr: IrExpr): readonly IrExpr[] {
   switch (expr.kind) {
     case 'const':
     case 'local':
+    case 'hostVariant':
     case 'componentField':
       return [];
     case 'field':

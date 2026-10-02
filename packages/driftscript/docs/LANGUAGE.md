@@ -254,6 +254,14 @@ f(x)   x.field   x?.field   x?
 1 < 2 && 3 < 4   // true
 ```
 
+**`==` compares what two values say.** Both sides have the same type, and two values are equal
+when they hold the same thing: numbers, strings and `bool`s as you would expect, a variant by which
+variant it is and the value it carries, an option or a result by its case and its value, a record
+field by field, a list element by element. So `Shape.Circle(2) == Shape.Circle(2)`, and a variant
+still equals itself after a hot reload has replaced the module that made it or a save has read it
+back. A host's value, such as a `Sound`, has nothing a script can see inside it and is equal only
+to itself.
+
 **There is no truthiness.** A condition must be `bool`. `if n { … }` on a number is an error, and
 the fix is to say what you meant: `if n != 0 { … }`.
 
@@ -501,6 +509,12 @@ called:
 let stop = Light.Red
 let round = Shape.Circle(2)
 ```
+
+**A host can declare an enum too**, for a capability whose answer is one of a few things: whether a
+contact began, held or ended, whether a parcel is solid, liquid or gas. A script names its variants,
+compares them and matches on them exactly as it does its own, and a `match` has to cover every one.
+Its documentation is with the capability that returns it. A script's own enum of the same name wins
+inside that script.
 
 ## Options: there is no null
 

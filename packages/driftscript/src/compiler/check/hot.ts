@@ -89,6 +89,7 @@ function allocationOf(expr: IrExpr): Allocation | null {
       return null;
     case 'const':
     case 'local':
+    case 'hostVariant':
     case 'componentField':
     case 'field':
     case 'unary':

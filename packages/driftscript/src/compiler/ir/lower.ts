@@ -206,7 +206,9 @@ function irTypeOf(type: Type | undefined): IrType {
   if (type === undefined) return VOID_IR;
   switch (type.kind) {
     case 'data':
-      return { kind: 'data', name: type.name };
+      return type.opaque === true
+        ? { kind: 'data', name: type.name, opaque: true }
+        : { kind: 'data', name: type.name };
     case 'entity':
       return { kind: 'entity' };
     case 'enum':
@@ -338,6 +340,16 @@ class Lowering {
         if (byHandle !== null) return byHandle;
         const byRow = this.rowRead(node);
         if (byRow !== null) return byRow;
+        /* A variant of the host's enum: the checker resolved the target as the enum's name. */
+        const named = this.checked.types.get(node);
+        if (
+          node.target.kind === 'ident' &&
+          named?.kind === 'enum' &&
+          named.host === true &&
+          node.target.name === named.name
+        ) {
+          return { kind: 'hostVariant', enumName: named.name, variant: node.name, type, span: node.span };
+        }
         return {
           kind: 'field',
           target: this.expr(node.target),
@@ -414,7 +426,7 @@ class Lowering {
             args.push({
               kind: 'local',
               name: world ?? 'world',
-              type: { kind: 'data', name: 'World' },
+              type: { kind: 'data', name: 'World', opaque: true },
               span: argument.span,
             });
             args.push(this.expr(argument.target));
@@ -495,7 +507,7 @@ class Lowering {
       kind: 'call',
       callee: `${ECS_ALIAS}.read`,
       args: [
-        { kind: 'local', name: world, type: { kind: 'data', name: 'World' }, span: node.span },
+        { kind: 'local', name: world, type: { kind: 'data', name: 'World', opaque: true }, span: node.span },
         this.expr(node.target.target),
         { kind: 'const', value: node.target.name, type: STRING_IR, span: node.span },
         { kind: 'const', value: node.name, type: STRING_IR, span: node.span },
@@ -523,7 +535,7 @@ class Lowering {
           kind: 'call',
           callee: `${ECS_ALIAS}.write`,
           args: [
-            { kind: 'local', name: worldOfRow(row.param), type: { kind: 'data', name: 'World' }, span: target.span },
+            { kind: 'local', name: worldOfRow(row.param), type: { kind: 'data', name: 'World', opaque: true }, span: target.span },
             { kind: 'local', name: row.param, type: { kind: 'entity' }, span: target.span },
             { kind: 'const', value: row.component, type: STRING_IR, span: target.span },
             { kind: 'const', value: target.name, type: STRING_IR, span: target.span },
@@ -554,7 +566,7 @@ class Lowering {
         kind: 'call',
         callee: `${ECS_ALIAS}.write`,
         args: [
-          { kind: 'local', name: world, type: { kind: 'data', name: 'World' }, span: target.span },
+          { kind: 'local', name: world, type: { kind: 'data', name: 'World', opaque: true }, span: target.span },
           this.expr(target.target.target),
           { kind: 'const', value: target.target.name, type: STRING_IR, span: target.span },
           { kind: 'const', value: target.name, type: STRING_IR, span: target.span },
@@ -576,7 +588,7 @@ class Lowering {
       kind: 'call',
       callee: `${ECS_ALIAS}.read`,
       args: [
-        { kind: 'local', name: worldOfRow(row.param), type: { kind: 'data', name: 'World' }, span: node.span },
+        { kind: 'local', name: worldOfRow(row.param), type: { kind: 'data', name: 'World', opaque: true }, span: node.span },
         { kind: 'local', name: row.param, type: { kind: 'entity' }, span: node.span },
         { kind: 'const', value: row.component, type: STRING_IR, span: node.span },
         { kind: 'const', value: node.name, type: STRING_IR, span: node.span },
@@ -1035,7 +1047,7 @@ class Lowering {
     for (const p of decl.params) {
       const component = this.componentParamOf(decl, p.name);
       if (component !== null) {
-        params.push({ name: worldOfRow(p.name), type: { kind: 'data', name: 'World' } });
+        params.push({ name: worldOfRow(p.name), type: { kind: 'data', name: 'World', opaque: true } });
         params.push({ name: p.name, type: { kind: 'entity' } });
         continue;
       }

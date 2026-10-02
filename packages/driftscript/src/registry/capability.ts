@@ -308,6 +308,20 @@ export interface OpaqueType {
   readonly module: string;
   readonly name: string;
   readonly doc: string;
+  /**
+   * The variants, when the host's type is a set of named alternatives: an enum the host defines.
+   *
+   * **For an answer that is one of a few things**, a contact that began, held or ended, a parcel
+   * that is solid, liquid or gas. Without this a capability could only answer with a number and a
+   * sentence saying what each number meant, and every script restated that sentence as constants
+   * and compared against them, where nothing checks the constant is right or that every case is
+   * handled. With it a script names the variants, a `match` over one has to cover them all, and the
+   * value crosses the boundary as `{ tag: 'Variant' }`, the shape of a script's own enum.
+   *
+   * Payload-free on purpose: a variant carrying a value would be a promise about the host's
+   * representation, the reason an opaque type has no fields.
+   */
+  readonly variants?: readonly string[];
 }
 
 export interface CapabilityRegistry {
@@ -338,6 +352,22 @@ export function createRegistry(): CapabilityRegistry {
           `\`${type.module}\` registers a type named \`float\`, which is the name a signature ` +
             'uses for either float width',
         );
+      }
+      if (type.variants !== undefined) {
+        if (type.variants.length === 0) {
+          throw new Error(`\`${type.module}\` registers an enum \`${type.name}\` with no variants`);
+        }
+        const seen = new Set<string>();
+        for (const variant of type.variants) {
+          if (!/^[A-Z][A-Za-z0-9]*$/.test(variant)) {
+            throw new Error(
+              `\`${type.name}.${variant}\` is not a variant a script can write: a variant starts ` +
+                'with a capital and is letters and digits',
+            );
+          }
+          if (seen.has(variant)) throw new Error(`\`${type.name}\` lists \`${variant}\` twice`);
+          seen.add(variant);
+        }
       }
       const existing = opaque.get(type.name);
       if (existing !== undefined && existing.module !== type.module) {
