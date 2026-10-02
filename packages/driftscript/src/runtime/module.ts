@@ -82,6 +82,16 @@ export interface DriftComponentInfo {
   /** The host registered it; the module only asserts its shape. Nothing is created for one. */
   readonly fromHost: boolean;
   readonly schema: Schema;
+  /**
+   * The value each field was declared with, `hp: f32 = 100`, by field name. A field declared with
+   * none is left out, and so is the whole record when no field has one.
+   *
+   * **A host fills a component from these**, wherever a value is not given: an entity added with
+   * some of its fields, a prefab that names a few, a saved scene from before a field existed. Before
+   * 1.14.0 the declared value was parsed and dropped, so each of those got zero and nothing said so.
+   * Always a constant, which the checker insists on (DS0275): a host builds the column from data.
+   */
+  readonly defaults?: Readonly<Record<string, number | string | boolean>>;
   /** `@editor(…)` per field. Absent in a production build, which strips it. */
   readonly editor?: Readonly<Record<string, unknown>>;
 }

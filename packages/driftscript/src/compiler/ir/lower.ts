@@ -127,6 +127,26 @@ const STRING_IR: IrType = { kind: 'string' };
  * do not collide — and suffixed with a character no identifier can carry, so it cannot shadow
  * anything an author wrote.
  */
+
+/**
+ * The constants a component's fields were declared with, read off the lowered fields.
+ *
+ * Only the fields that declared one: a field with none lowers to its type's zero so a record can be
+ * built, and reporting that zero as a declaration would tell a host the author chose it. A default
+ * that did not lower to a constant is left out; the checker has already refused it (DS0275), so a
+ * module that reaches here with one did not check.
+ */
+function declaredDefaults(
+  declared: readonly FieldDecl[],
+  lowered: readonly IrField[],
+): Record<string, number | string | boolean> {
+  const defaults: Record<string, number | string | boolean> = {};
+  declared.forEach((field, index) => {
+    const init = lowered[index]?.init;
+    if (field.default !== undefined && init?.kind === 'const') defaults[field.name] = init.value;
+  });
+  return defaults;
+}
 function worldOfRow(param: string): string {
   return `${param}$world`;
 }
@@ -818,10 +838,12 @@ class Lowering {
   component(decl: ComponentDecl): IrComponent {
     const editor: Record<string, EditorMeta> = {};
     for (const field of decl.fields) if (field.editor !== undefined) editor[field.name] = field.editor;
+    const fields = this.componentFields(decl.name, decl.fields);
     return {
       name: decl.name,
       fromHost: decl.fromHost,
-      fields: this.componentFields(decl.name, decl.fields),
+      fields,
+      defaults: declaredDefaults(decl.fields, fields),
       editor,
       span: decl.span,
     };
@@ -831,10 +853,12 @@ class Lowering {
   entityComponent(decl: EntityDecl): IrComponent {
     const editor: Record<string, EditorMeta> = {};
     for (const field of decl.fields) if (field.editor !== undefined) editor[field.name] = field.editor;
+    const fields = this.componentFields(decl.name, decl.fields);
     return {
       name: decl.name,
       fromHost: false,
-      fields: this.componentFields(decl.name, decl.fields),
+      fields,
+      defaults: declaredDefaults(decl.fields, fields),
       editor,
       span: decl.span,
     };

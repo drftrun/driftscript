@@ -1163,3 +1163,45 @@ system Walker {
     expect(all.filter((d) => d.code === 'DS0291')).toEqual([]);
   });
 });
+
+describe("a component's declared values are data", () => {
+  it('accepts constants of the field type', () => {
+    expect(
+      errorsIn(`
+component Bed { seed: u32 = 7, pace: f32 = -0.5, open: bool = true, label: String = "bed" }
+`),
+    ).toEqual([]);
+  });
+
+  it('refuses a value computed when an entity is made', () => {
+    /* A host fills omitted fields from the metadata, so a computed default has nowhere to run. */
+    const errors = errorsIn(`
+fn roll() -> f32 {
+    return 1
+}
+
+component Bed { pace: f32 = roll() }
+`);
+    expect(errors[0]?.code).toBe('DS0275');
+    expect(errors[0]?.message).toContain('constant');
+  });
+
+  it('refuses a default of the wrong type, which nothing checked before', () => {
+    const errors = errorsIn(`component Bed { pace: f32 = "fast" }`);
+    expect(errors[0]?.code).toBe('DS0202');
+  });
+
+  it("holds an entity's own var fields to the same", () => {
+    const errors = errorsIn(`
+fn roll() -> f32 {
+    return 1
+}
+
+entity Gardener {
+    var pace: f32 = roll()
+}
+`);
+    expect(errors[0]?.code).toBe('DS0275');
+  });
+});
+

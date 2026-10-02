@@ -85,6 +85,8 @@ export function entityMetadata(
         name: component.name,
         fromHost: component.fromHost,
         schema,
+        /* Absent when no field declared one, for the same reason as `editor` below. */
+        ...(Object.keys(component.defaults).length > 0 ? { defaults: component.defaults } : {}),
         /* Absent in production, and absent rather than empty: an empty object in every component of
            every shipped module is bytes describing nothing. */
         ...(mode === 'development' && editor !== undefined ? { editor } : {}),

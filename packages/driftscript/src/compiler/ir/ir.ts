@@ -359,6 +359,8 @@ export interface IrComponent {
   /** `component X from host { … }` — the host registered it; this asserts its shape at bind. */
   readonly fromHost: boolean;
   readonly fields: readonly IrField[];
+  /** The constant each field was declared with, by name; a field declared with none is absent. */
+  readonly defaults: Readonly<Record<string, number | string | boolean>>;
   /** Per-field editor metadata, by field name. Absent in a production build — see the emitter. */
   readonly editor: Readonly<Record<string, EditorMeta>>;
   readonly span: Span;

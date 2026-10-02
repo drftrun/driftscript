@@ -29,6 +29,8 @@ import type {
   PrefabDecl,
   ConstDecl,
   ParamDecl,
+  ComponentDecl,
+  EntityDecl,
 } from '../ast.ts';
 import { visitStmts } from '../astWalk.ts';
 import type { Diagnostic, DiagnosticCode } from '../diagnostics.ts';
@@ -742,6 +744,8 @@ class Checker {
       else if (decl.kind === 'state') this.checkState(decl);
       else if (decl.kind === 'system') this.checkSystem(decl);
       else if (decl.kind === 'prefab') this.checkPrefab(decl);
+      else if (decl.kind === 'component' && !decl.fromHost) this.checkComponentDefaults(decl);
+      else if (decl.kind === 'entity') this.checkComponentDefaults(decl);
     }
     this.checkMachine();
     /* After the bodies, because inference reads the same tree and access from a body with a type
@@ -1196,6 +1200,46 @@ class Checker {
           'DS0202',
           `\`${field.name}\` is declared \`${nameOf(declared)}\` but its default is ` +
             `\`${nameOf(actual)}\``,
+          field.default.span,
+        );
+      }
+    }
+  }
+
+  /**
+   * A component's declared values: the field's type, and a constant.
+   *
+   * **A host builds the component's columns from these**, through the module's metadata, wherever a
+   * value is not given: an entity added with some of its fields, a prefab that names a few, a saved
+   * scene from before a field existed. So a default has to be data, for `checkPrefab`'s reason: a
+   * value computed when something is added has nowhere to be computed on the other side. And it has
+   * to be typed, which nothing did before 1.14.0 either: the value was parsed, never checked, and
+   * then dropped, so `hp: f32 = "full"` compiled and every entity got zero.
+   *
+   * An entity's `var` fields are its implicit component, and get the same two checks.
+   */
+  private checkComponentDefaults(decl: ComponentDecl | EntityDecl): void {
+    const scope = new Scope();
+    for (const field of decl.fields) {
+      if (field.default === undefined) continue;
+      const declared = this.resolveTypeRef(field.type);
+      const actual = this.checkExpr(field.default, scope, declared);
+      if (actual.kind !== 'error' && !assignable(actual, declared)) {
+        this.report(
+          'DS0202',
+          `\`${field.name}\` is declared \`${nameOf(declared)}\` but its default is ` +
+            `\`${nameOf(actual)}\``,
+          field.default.span,
+        );
+        continue;
+      }
+      if (!isConstantExpr(field.default)) {
+        this.report(
+          'DS0275',
+          `\`${decl.name}.${field.name}\` has a default that is not a constant. A host fills a ` +
+            'component from its declared values wherever one is not given, so a value computed ' +
+            'when an entity is made has nowhere to be computed: write the constant here and change ' +
+            'it after the entity exists.',
           field.default.span,
         );
       }

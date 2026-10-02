@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parse } from '../parser.ts';
 import { check } from '../check/checker.ts';
 import { lower } from './lower.ts';
+import { entityMetadata } from '../emit/entityMeta.ts';
 import { compileDriftScript, singleFileHost } from '../index.ts';
 
 const PULSE = `data PulseState {
@@ -169,3 +170,46 @@ describe('prefab constants', () => {
     expect(ir.prefabs[0]?.components[0]?.values['rate']).toBeCloseTo(0.7, 6);
   });
 });
+
+describe('component defaults', () => {
+  /*
+   * Before 1.14.0 a component's declared values were parsed and then dropped: the metadata carried
+   * a schema of ids, names and types, so a host filled every field it was not given with zero.
+   * `seed: u32 = 7` meant nothing to an entity added without a seed, to a prefab that left it out,
+   * or to a save from before the field existed. Found by a garden whose bed was always seeded 0.
+   */
+  it('reach the metadata a host builds the component from, constants only', () => {
+    const ir = lowerSource(`
+      component Bed {
+          seed: u32 = 7
+          pace: f32 = -0.5
+          open: bool = true
+          label: String = "bed"
+          sown: u32
+      }
+    `);
+    const [bed] = entityMetadata(ir, 'production').components;
+    expect(bed?.defaults).toEqual({ seed: 7, pace: -0.5, open: true, label: 'bed' });
+  });
+
+  it("carry an entity's own var fields, which are its implicit component", () => {
+    const ir = lowerSource(`
+      entity Gardener {
+          var pace: f32 = 1.5
+          var rested: bool
+      }
+    `);
+    const [own] = entityMetadata(ir, 'production').components;
+    expect(own?.defaults).toEqual({ pace: 1.5 });
+  });
+
+  it('leave the record out when no field declared one', () => {
+    const ir = lowerSource(`
+      component Marker {}
+      component Tag { n: u32 }
+    `);
+    for (const component of entityMetadata(ir, 'production').components)
+      expect('defaults' in component).toBe(false);
+  });
+});
+

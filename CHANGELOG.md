@@ -12,6 +12,28 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.14.0
+
+**A component's declared values reach the host, so an entity made without a field gets the value
+the script gave it.**
+
+`component Bed { seed: u32 = 7 }` parsed the `7`, lowered it, and dropped it: the metadata a host
+builds a component from carried each field's id, name and type and nothing else. So every place a
+host fills a field it was not given filled zero. An entity added with some of its fields, a prefab
+that names a few, a saved scene from before a field existed: each got `0`, `false` or nothing, and
+nothing said so.
+
+`DriftComponentInfo` gains `defaults`, the constant each field was declared with, by name. A field
+declared without one is left out, and so is the whole record when no field has one. An entity's
+own `var` fields are its implicit component and carry theirs the same way. A host reads it where
+it reads `schema`; one built against an earlier version reads nothing and fills zero, as before.
+
+**A component's defaults are checked now, and have to be constants.** They were never type-checked,
+so `pace: f32 = "fast"` compiled; it is DS0202 like a record's. And a default that is computed is
+**DS0275**, on `checkPrefab`'s reasoning for DS0297: a host fills the columns from data, so a value
+computed when an entity is made has nowhere to be computed. Every component in every script in the
+corpus and the engine's examples already used constants.
+
 ## 1.13.1
 
 **The Vite plugin names a module by its path from the project root, so a bundle no longer carries
