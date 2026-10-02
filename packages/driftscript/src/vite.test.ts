@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -305,6 +305,38 @@ describe('the plugin resolving files from disk', () => {
     const watched: string[] = [];
     transform('data P {\n    a: f32 = 0\n}\n', watched);
     expect(watched).toEqual([]);
+  });
+
+  /*
+   * A module's name is in the code it emits, and every field id is built from it, so an absolute
+   * path put the directory a build ran in into the bundle a site shipped: a home directory from a
+   * laptop, a runner's workspace from CI, and output that changed with where the checkout lived.
+   */
+  it('names a module by its path from the project root, so a bundle does not carry the machine it was built on', () => {
+    mkdirSync(path.join(dir, 'pack'), { recursive: true });
+    writeFileSync(path.join(dir, 'pack', 'wolf.drs'), TYPE_ONLY.replace('./dog', '../dog'));
+    const plugin = driftScript();
+    plugin.configResolved({ root: dir });
+
+    const watched: string[] = [];
+    const result = plugin.transform.call(
+      { addWatchFile: (id: string) => watched.push(id) },
+      TYPE_ONLY.replace('./dog', '../dog'),
+      path.join(dir, 'pack', 'wolf.drs'),
+    );
+
+    expect(result?.code).toContain('"module":"pack/wolf.drs"');
+    expect(result?.code).toContain('name: "rex"');
+    expect(result?.code).not.toContain(dir);
+    expect(watched).toEqual([path.join(dir, 'dog.drs')]);
+  });
+
+  it("names the source in its map by the file's own name, which a bundler reads beside the file", () => {
+    const plugin = driftScript();
+    plugin.configResolved({ root: dir });
+    const result = plugin.transform.call(ignoringWatches, PULSE, path.join(dir, 'pack', 'p.drs'));
+    expect(result?.map.sources).toEqual(['p.drs']);
+    expect(JSON.stringify(result?.map)).not.toContain(dir);
   });
 });
 

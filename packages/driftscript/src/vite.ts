@@ -70,9 +70,15 @@ export interface TransformContext {
   addWatchFile(id: string): void;
 }
 
+/** The one field of a bundler's resolved config this reads: the directory modules are named from. */
+export interface ResolvedConfig {
+  readonly root: string;
+}
+
 export interface DriftScriptPlugin {
   readonly name: 'driftscript';
   readonly enforce: 'pre';
+  configResolved(config: ResolvedConfig): void;
   transform(this: TransformContext, code: string, id: string): TransformResult | null;
   hotUpdate(options: HotUpdateOptions): Promise<readonly HotUpdateModule[] | undefined>;
 }
@@ -174,24 +180,42 @@ export interface DriftScriptPluginOptions {
  * The extension is appended here rather than written in source, matching the language: `drift/audio`
  * carries none either, and a file that spells two kinds of import two ways is a file with a rule to
  * remember.
+ *
+ * Every id it answers is a module name from `moduleName`, and every id it is handed is one, so the
+ * compiler never sees an absolute path.
  */
-function filesystemHost(): ModuleHost {
+function filesystemHost(root: string): ModuleHost {
   return {
     resolve(specifier, from) {
-      const resolved = `${path.resolve(path.dirname(from.split('?')[0]), specifier)}.drs`;
-      return existsSync(resolved) ? resolved : null;
+      const resolved = `${path.resolve(root, path.dirname(from), specifier)}.drs`;
+      return existsSync(resolved) ? moduleName(root, resolved) : null;
     },
     load(id) {
       /* `existsSync` said yes a moment ago, and a file can still be gone — a save in flight, a
          branch switch mid-build. Answering null is what turns that into DS0501 rather than an
          exception out of a compiler that promises not to throw. */
       try {
-        return readFileSync(id, 'utf8');
+        return readFileSync(path.resolve(root, id), 'utf8');
       } catch {
         return null;
       }
     },
   };
+}
+
+/**
+ * A file's name in the code compiled from it: its path from the project root, with forward slashes
+ * and without any query a bundler appended.
+ *
+ * **The compiler writes this name into what it emits**, as the module's identity and inside every
+ * field id a migration matches on. It used to be the bundler's id, which is an absolute path, so a
+ * bundle carried the directory it was built in: a home directory from a laptop, a runner's workspace
+ * from CI, and different output for the same source in two checkouts. A path from the root is as
+ * unique within a project, and the same on every machine, which a hot patch matching one version
+ * against the next needs as much as a shipped bundle does.
+ */
+function moduleName(root: string, file: string): string {
+  return path.relative(root, file.split('?')[0]).split(path.sep).join('/');
 }
 
 /** Whether a module id is a `.drs` file, ignoring any query a bundler appended. */
@@ -267,15 +291,19 @@ export function driftScript(options: DriftScriptPluginOptions = {}): DriftScript
    */
   const registry = resolveRegistry(options);
 
+  /* The bundler's root once it has said, and the working directory until then, which is the root a
+     bundler with no config hook means. */
+  let root = process.cwd();
+
   const compile = (source: string, id: string): CompileResult => {
     const hit = compiled.get(id);
     if (hit !== undefined && hit.source === source) return hit.result;
 
     const result = compileDriftScript(source, {
-      filename: id,
+      filename: moduleName(root, id),
       manifest: options.manifest,
       registry,
-      host: filesystemHost(),
+      host: filesystemHost(root),
       mode: options.mode ?? 'development',
       verification: options.verification,
       fixedStepsPerSecond: options.fixedStepsPerSecond,
@@ -296,6 +324,10 @@ export function driftScript(options: DriftScriptPluginOptions = {}): DriftScript
      */
     enforce: 'pre',
 
+    configResolved(config) {
+      root = config.root;
+    },
+
     transform(code, id) {
       if (!isDriftScript(id)) return null;
 
@@ -313,7 +345,7 @@ export function driftScript(options: DriftScriptPluginOptions = {}): DriftScript
        * what it imported, and a build that stopped watching on failure would never notice the edit
        * that fixed it.
        */
-      for (const dependency of result.metadata.imports) this.addWatchFile(dependency);
+      for (const dependency of result.metadata.imports) this.addWatchFile(path.resolve(root, dependency));
 
       /*
        * **Errors stop the build; warnings do not.**
@@ -345,7 +377,12 @@ export function driftScript(options: DriftScriptPluginOptions = {}): DriftScript
       }
 
       interfaces.record(id, result.metadata.interfaceHash);
-      return { code: result.code, map: result.map };
+      /* The source is named as a bundler reads a map handed back by a transform: relative to the
+         file's own directory, which for a map of one file is the file's own name. */
+      return {
+        code: result.code,
+        map: { ...result.map, sources: [path.basename(id.split('?')[0])] },
+      };
     },
 
     /**

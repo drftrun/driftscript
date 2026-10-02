@@ -12,6 +12,31 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.13.1
+
+**The Vite plugin names a module by its path from the project root, so a bundle no longer carries
+the directory it was built in.**
+
+The compiler writes a module's name into the code it emits. It is `__drift.module`, and it begins
+every field id a migration matches on. The plugin passed the bundler's id, which is an absolute
+path, so every `.drs` file in a production bundle carried the build machine's directory: the
+author's home directory when built on a laptop, the runner's workspace when built in CI. The same
+source also compiled to different output in two checkouts.
+
+The name is now the file's path from the bundler's root, with forward slashes and without a query,
+and the plugin reads the root in a new `configResolved` hook. A bundler that has no such hook gets
+the working directory, which is what its root means anyway. Both versions of a module in a hot patch
+are named the same way, so field ids still match across an edit, and an edit that adds a timestamp
+query to the request is named like the first load. Imports between `.drs` files resolve as before
+and are watched by their absolute paths. The source map names its source by the file's own name,
+which is how a bundler reads a map a transform returns.
+
+The runtime compares no module names, so a host sees the change only where it prints one in a
+message, which now reads `audio/courtyard.drs` where it read a full path.
+
+The size the `driftscript` README quotes had fallen 3.5% behind the tarball before this release,
+and is the measured figure again.
+
 ## 1.13.0
 
 **DS-8 is answered, which was the last refused phase and the only one that waited on a track.**

@@ -340,7 +340,7 @@ language's keywords by reading the lexer. The VSCode client is in the same repos
 
 ## What it costs
 
-497.8 kB packed, 2.2 MB unpacked, because the tarball carries compiled JavaScript, declarations,
+516.3 kB packed, 2.2 MB unpacked, because the tarball carries compiled JavaScript, declarations,
 source maps and the source those maps point at. The runtime a browser actually receives is a few
 kilobytes gzipped — the compiler is behind its own entry point and a production bundle drops it.
 
