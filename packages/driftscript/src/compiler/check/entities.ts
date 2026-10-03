@@ -299,6 +299,7 @@ function directAccess(
   body: readonly Stmt[],
   model: EntityModel,
   rows: ReadonlyMap<string, string> = new Map(),
+  hostParams: HostParams = NO_HOST_PARAMS,
 ): { reads: Set<string>; writes: Set<string>; calls: Set<string> } {
   const reads = new Set<string>();
   const writes = new Set<string>();
@@ -326,6 +327,17 @@ function directAccess(
       const row = rowRead(node);
       if (row !== null) reads.add(row);
       if (node.kind === 'call' && node.callee.kind === 'ident') calls.add(node.callee.name);
+      /* A component named to a host as a literal, where the host says the parameter names one. */
+      if (node.kind === 'call') {
+        const marks = hostParams(node.callee);
+        if (marks === null) return;
+        for (let at = 0; at < node.args.length; at += 1) {
+          const mark = marks[at];
+          const arg = node.args[at];
+          if (mark === undefined || arg?.kind !== 'string' || !model.components.has(arg.value)) continue;
+          (mark === 'write' ? writes : reads).add(arg.value);
+        }
+      }
     });
   };
 
@@ -456,11 +468,21 @@ function assertWalked(stmt: never): void {
  * a property of the code, and a function that calls something which writes `Hunger` writes `Hunger`
  * whether or not anybody wrote it down. Iteration is bounded because each round can only add.
  */
+/**
+ * What a call's callee says about its parameters: per argument, whether it names a component and
+ * how, or null where the callee is no host capability. The checker answers it from the registry.
+ */
+export type HostParams = (callee: Expr) => readonly ('read' | 'write' | undefined)[] | null;
+
+const NO_HOST_PARAMS: HostParams = () => null;
+
 export function inferAccess(
   module: Module,
   model: EntityModel,
   /** What functions imported from other files touch, which their own files worked out. */
   imported: ReadonlyMap<string, Access> = new Map(),
+  /** Which host parameters name a component. See `CapabilityParam.component`. */
+  hostParams: HostParams = NO_HOST_PARAMS,
 ): ReadonlyMap<string, Access> {
   const fns = module.decls.filter((d): d is FnDecl => d.kind === 'fn');
   const systems = module.decls.filter((d): d is SystemDecl => d.kind === 'system');
@@ -488,7 +510,7 @@ export function inferAccess(
         }
       }
     }
-    const found = directAccess(decl.body, model, rows);
+    const found = directAccess(decl.body, model, rows, hostParams);
     reads.set(decl.name, found.reads);
     writes.set(decl.name, found.writes);
     calls.set(decl.name, found.calls);

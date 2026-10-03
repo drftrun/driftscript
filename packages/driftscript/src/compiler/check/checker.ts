@@ -857,7 +857,16 @@ class Checker {
       report: (code, message, span) => this.report(code, message, span),
       taken: (name) => this.data.has(name) || this.enums.has(name),
     });
-    this.access = inferAccess(module, this.entityModel, this.imported?.access);
+    this.access = inferAccess(module, this.entityModel, this.imported?.access, (callee) => {
+      /* `ecs.count(...)`: the namespace a module was imported as, and a capability of it. */
+      if (this.registry === undefined || callee.kind !== 'member' || callee.target.kind !== 'ident') {
+        return null;
+      }
+      const namespace = this.namespaces.get(callee.target.name);
+      if (namespace === undefined) return null;
+      const definition = this.registry.get(namespace.module, callee.name);
+      return definition === undefined ? null : definition.params.map((param) => param.component);
+    });
   }
 
   private collectData(decl: DataDecl): void {

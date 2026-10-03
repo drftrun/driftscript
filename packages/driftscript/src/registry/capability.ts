@@ -184,6 +184,17 @@ export const FLOAT: TypeName = 'float';
 export interface CapabilityParam {
   readonly name: string;
   readonly type: TypeName;
+  /**
+   * That this parameter names a component, and whether the call reads or writes it.
+   *
+   * **For a host that takes a component by its name**, as `ecs.count(world, "Hunger")` does, and
+   * refuses one a system did not declare. A string literal here naming a component of the module is
+   * counted as that access, exactly as `e.Hunger` is, so the declaration the host demands is not
+   * called unused and a missing one is refused at compile time. A name that is not a literal is not
+   * counted: what a variable holds is not known here, and a guess would be a wrong declaration.
+   * Absent on every parameter that does not name a component, which was every one before 1.17.0.
+   */
+  readonly component?: 'read' | 'write';
 }
 
 export interface CapabilityDefinition {

@@ -399,6 +399,10 @@ helper in another module reads and writes is what the system reads and writes. `
 entity it matched is not in the result at all. `.with<T>()` narrows the same way the type arguments
 do, so it counts like them.
 
+A component named to a host by a string counts as well, where the host says the parameter names
+one: `ecs.count(world, "Gait")` is a read of `Gait`, and a host's write by name is a write. Only a
+string literal is counted, because what a variable holds is not known when the module compiles.
+
 **This was wrong in this compiler until 2026-08-28**, and it was wrong in the direction that costs
 most: the analysis walked a loop's body and not its terms, so `DS0291` called the declaration a host
 demanded unused, and a module written on that advice compiled clean and threw once a tick inside the

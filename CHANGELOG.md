@@ -12,6 +12,16 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.17.0
+
+**A component named to a host by a string is counted as a read or a write.** A host that takes a
+component by name, as `ecs.count(world, "Hunger")` does, refuses one the system did not declare, and
+the compiler never counted the name: a system that declared `reads Hunger` for a count was told by
+`DS0291` that it never read Hunger, and one that left it undeclared compiled clean and was refused
+when it ran. A capability parameter can now say it names a component, with `component: 'read'` or
+`'write'`, and a string literal there naming a component of the module counts as that access. A
+name that is not a literal is not counted. A host that marks no parameter compiles exactly as before.
+
 ## 1.16.0
 
 **An optional component field reads and writes as an option, in a query loop and through a handle.**

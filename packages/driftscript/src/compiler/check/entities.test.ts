@@ -1205,3 +1205,79 @@ entity Gardener {
   });
 });
 
+
+/**
+ * **A component named to a host by a string is a read, when the host says the string names one.**
+ *
+ * `ecs.count(world, "Hunger")` reaches a host that refuses a count of a component the system did not
+ * declare, and the compiler never counted the name: a system that declared `reads Hunger` for it
+ * was told by `DS0291` that it never read Hunger, and following that advice threw once per tick.
+ * Reported from a game. A capability marks the parameter that names a component, and how; a string
+ * literal there names a component of this module or nothing.
+ */
+describe('a component named to a host', () => {
+  const registry = () => {
+    const r = createRegistry();
+    r.addType({ module: 'drift/ecs', name: 'World', doc: 'A world.' });
+    r.add(
+      defineCapability({
+        module: 'drift/ecs',
+        name: 'count',
+        signature: 'fn(world: World, component: String) -> u32',
+        params: [
+          { name: 'world', type: 'World' },
+          { name: 'component', type: 'String', component: 'read' },
+        ],
+        returns: 'u32',
+        effects: ['ecs.read'],
+        deterministic: true,
+        doc: 'How many entities carry a component.',
+        implementation: 'World.count',
+      }),
+    );
+    return r;
+  };
+  const diagnostics = (source: string, withRegistry = registry()) => {
+    const parsed = parse(source, 'm.drs');
+    return check(parsed.module, 'm.drs', withRegistry).diagnostics.map((d) => ({
+      code: d.code,
+      severity: d.severity,
+      message: d.message,
+    }));
+  };
+  const counting = (declares: string): string =>
+    'import { count } from "drift/ecs"\n\n' +
+    'component Hunger {\n    value: f64 = 0\n}\n\n' +
+    `system S {\n${declares}    update {\n        let n = ecs.count(world, "Hunger")\n    }\n}\n`;
+
+  it('counts the read, so the declaration it needs is not called unused', () => {
+    const found = diagnostics(counting('    reads Hunger\n\n'));
+    expect(found.filter((d) => d.code === 'DS0291')).toEqual([]);
+    expect(found.filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('refuses the count when the read is not declared, as the host would when it ran', () => {
+    const undeclared =
+      'import { count } from "drift/ecs"\n\n' +
+      'component Hunger {\n    value: f64 = 0\n}\ncomponent Health {\n    current: f64 = 0\n}\n\n' +
+      'system S {\n    reads Health\n\n    update {\n        let n = ecs.count(world, "Hunger")\n' +
+      '        for e in query<Health>() { let h = e.Health.current }\n    }\n}\n';
+    const codes = diagnostics(undeclared).map((d) => d.code);
+    expect(codes).toContain('DS0288');
+  });
+
+  it('counts nothing for a parameter the host does not mark, which is every one before this', () => {
+    const plain = createRegistry();
+    for (const capability of registry().all()) {
+      plain.add(
+        defineCapability({
+          ...capability,
+          params: capability.params.map(({ name, type }) => ({ name, type })),
+        }),
+      );
+    }
+    for (const type of registry().types()) plain.addType(type);
+    const found = diagnostics(counting('    reads Hunger\n\n'), plain);
+    expect(found.map((d) => d.code)).toContain('DS0291');
+  });
+});
