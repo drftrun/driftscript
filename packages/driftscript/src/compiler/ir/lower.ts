@@ -202,6 +202,39 @@ function constantNames(expr: Expr): string[] {
   }
 }
 
+/**
+ * An optional component field reached through a handle or a row.
+ *
+ * The host's `ecs.read` answers `undefined` for an absent optional field and its `ecs.write` clears
+ * one given `undefined`; a script's option is a tag. So the read is wrapped in `$opt` and the value
+ * written in `$unopt`, and the call itself carries the field's inner type, which is what crosses.
+ * Before this the bare number reached a script typed as an option, so `if let` on it never matched,
+ * and a written option reached the host as an object it stored as `NaN`.
+ */
+function optionRead(call: Extract<IrExpr, { kind: 'call' }>): IrExpr {
+  if (call.type.kind !== 'option') return call;
+  return {
+    kind: 'call',
+    callee: '$opt',
+    args: [{ ...call, type: call.type.inner }],
+    rounds: false,
+    type: call.type,
+    span: call.span,
+  };
+}
+
+function optionWrite(value: IrExpr, field: IrType): IrExpr {
+  if (field.kind !== 'option') return value;
+  return {
+    kind: 'call',
+    callee: '$unopt',
+    args: [value],
+    rounds: false,
+    type: field.inner,
+    span: value.span,
+  };
+}
+
 function irTypeOf(type: Type | undefined): IrType {
   if (type === undefined) return VOID_IR;
   switch (type.kind) {
@@ -503,7 +536,7 @@ class Lowering {
     const world = this.checked.componentWorlds.get(node.target);
     if (world === undefined) return null;
     const type = this.typeOf(node);
-    return {
+    return optionRead({
       kind: 'call',
       callee: `${ECS_ALIAS}.read`,
       args: [
@@ -515,7 +548,7 @@ class Lowering {
       rounds: false,
       type,
       span: node.span,
-    };
+    });
   }
 
   /**
@@ -539,7 +572,7 @@ class Lowering {
             { kind: 'local', name: row.param, type: { kind: 'entity' }, span: target.span },
             { kind: 'const', value: row.component, type: STRING_IR, span: target.span },
             { kind: 'const', value: target.name, type: STRING_IR, span: target.span },
-            this.expr(value),
+            optionWrite(this.expr(value), this.typeOf(target)),
           ],
           rounds: false,
           type: VOID_IR,
@@ -570,7 +603,7 @@ class Lowering {
           this.expr(target.target.target),
           { kind: 'const', value: target.target.name, type: STRING_IR, span: target.span },
           { kind: 'const', value: target.name, type: STRING_IR, span: target.span },
-          this.expr(value),
+          optionWrite(this.expr(value), this.typeOf(target)),
         ],
         rounds: false,
         type: VOID_IR,
@@ -584,7 +617,7 @@ class Lowering {
   private rowRead(node: Extract<Expr, { kind: 'member' }>): IrExpr | null {
     const row = this.checked.rowFields.get(node);
     if (row === undefined) return null;
-    return {
+    return optionRead({
       kind: 'call',
       callee: `${ECS_ALIAS}.read`,
       args: [
@@ -596,7 +629,7 @@ class Lowering {
       rounds: false,
       type: this.typeOf(node),
       span: node.span,
-    };
+    });
   }
 
   private componentAccess(node: Expr): { depth: number; view: number } | null {

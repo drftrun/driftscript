@@ -332,6 +332,27 @@ wrote it rather than a zero at runtime.
 **It needs a world in scope**, because that is what the read runs against. A `system` has one; a
 function takes a `World` parameter.
 
+**A field may be an option**, and it reads and writes as one wherever it is reached, in a loop or
+through a handle:
+
+```drs
+component Follow {
+    target: Entity?
+}
+
+fn lead(world: World, who: Entity, leader: Entity) {
+    if let current = who.Follow.target {
+        // already following someone
+    } else {
+        who.Follow.target = some(leader)
+    }
+}
+```
+
+Writing `none` clears the field, and reading a cleared one answers `none`. A host keeps the value and
+whether it is present as two columns, and the compiler reads and writes both: this was wrong until
+1.16.0, when a field read as the bare number in its column and a written option was stored as `NaN`.
+
 A function can say which component it works on, and take a row of it:
 
 ```drs
@@ -373,7 +394,8 @@ system Walk {
 ```
 
 `Gait` is declared although no field of it is read: the loop narrows by it, so the host is told about
-it. `Still` is not declared, and must not be — an exclusion never looks inside the component, and an
+it. A function the system calls counts as part of it, whichever file declared the function: what a
+helper in another module reads and writes is what the system reads and writes. `Still` is not declared, and must not be — an exclusion never looks inside the component, and an
 entity it matched is not in the result at all. `.with<T>()` narrows the same way the type arguments
 do, so it counts like them.
 

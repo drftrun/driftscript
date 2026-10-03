@@ -13,6 +13,7 @@
  */
 import type { Diagnostic } from '../diagnostics.ts';
 import type { ImportedScope } from '../check/checker.ts';
+import type { Access } from '../check/entities.ts';
 import { collect } from '../check/checker.ts';
 import type { IrField } from '../ir/ir.ts';
 import { lowerRecords } from '../ir/lower.ts';
@@ -92,6 +93,7 @@ export function interfacesOf(graph: ResolvedGraph): ReadonlyMap<string, Publishe
         enums: own.enums,
         functions: own.functions,
         constants: own.constants,
+        access: own.access,
       },
       records: lowerRecords(
         module.module,
@@ -146,6 +148,7 @@ function scopeFor(
   const enums = new Map<string, ReturnType<typeof Map.prototype.get>>();
   const functions = new Map<string, ReturnType<typeof Map.prototype.get>>();
   const constants = new Map<string, ReturnType<typeof Map.prototype.get>>();
+  const access = new Map<string, Access>();
   const records = new Map<string, readonly IrField[]>();
   const diagnostics: Diagnostic[] = [];
 
@@ -182,7 +185,11 @@ function scopeFor(
 
       if (type !== undefined) data.set(name, type);
       else if (enumeration !== undefined) enums.set(name, enumeration);
-      else if (fn !== undefined) functions.set(name, fn);
+      else if (fn !== undefined) {
+        functions.set(name, fn);
+        const touched = published.access?.get(name);
+        if (touched !== undefined) access.set(name, touched);
+      }
       else if (constant !== undefined) constants.set(name, constant);
       else {
         diagnostics.push({
@@ -198,7 +205,7 @@ function scopeFor(
   }
 
   return {
-    scope: { data, enums, functions, constants } as ImportedScope,
+    scope: { data, enums, functions, constants, access } as ImportedScope,
     records,
     requires,
     through,

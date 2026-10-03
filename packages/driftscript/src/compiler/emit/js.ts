@@ -198,6 +198,19 @@ class Writer {
 const NONE = "{ tag: 'none' }";
 
 /**
+ * The column a host keeps an optional component field's presence in: `<field>$present`.
+ *
+ * **Part of the entity ABI**, beside the view's `sparse` and `dense`: a host stores an optional
+ * field as its value column and a `Uint8Array` of presence under this name, and a loop reads and
+ * writes both. A loop that read the value column alone answered whatever the slot last held, and
+ * one that wrote an option into it stored `NaN`. `$` makes the name one no field can collide with,
+ * because a `.drs` file cannot write it.
+ */
+function presenceOf(field: string): string {
+  return `${field}$present`;
+}
+
+/**
  * The module constant one of a host enum's variants is read from.
  *
  * `$` separates the two names because neither can contain one, so the preamble can split them
@@ -233,6 +246,11 @@ function emitExprText(expr: IrExpr): string {
        * the array it is walking; a hoisted local would then be storage nothing reads, with no error
        * and no wrong type. The index local is refreshed per iteration for the same reason.
        */
+      if (expr.type.kind === 'option') {
+        const at = `$i${expr.depth}_${expr.view}`;
+        const view = `$v${expr.depth}_${expr.view}`;
+        return `(${view}.${presenceOf(expr.field)}[${at}] === 1 ? { tag: 'some', value: ${view}.${expr.field}[${at}] } : ${NONE})`;
+      }
       return `$v${expr.depth}_${expr.view}.${expr.field}[$i${expr.depth}_${expr.view}]`;
     case 'local':
       return jsName(expr.name);
@@ -453,6 +471,24 @@ function emitStmt(writer: Writer, stmt: IrStmt): void {
       writer.line_(`let ${jsName(stmt.name)} = ${emitExprText(stmt.value)};`);
       return;
     case 'assign':
+      if (stmt.target.kind === 'componentField' && stmt.target.type.kind === 'option') {
+        /* The value and its presence, written together: `none` clears the presence and leaves the
+           value column alone, which is what the host's own write does with `undefined`. */
+        const { field, depth, view } = stmt.target;
+        const at = `$i${depth}_${view}`;
+        const columns = `$v${depth}_${view}`;
+        writer.block('{', () => {
+          writer.line_(`const $o = ${emitExprText(stmt.value)};`);
+          writer.block("if ($o.tag === 'some') {", () => {
+            writer.line_(`${columns}.${field}[${at}] = $o.value;`);
+            writer.line_(`${columns}.${presenceOf(field)}[${at}] = 1;`);
+          });
+          writer.block('else {', () => {
+            writer.line_(`${columns}.${presenceOf(field)}[${at}] = 0;`);
+          });
+        });
+        return;
+      }
       writer.line_(`${emitExprText(stmt.target)} = ${emitExprText(stmt.value)};`);
       return;
     case 'return':
@@ -1043,6 +1079,17 @@ const HELPERS: Readonly<Record<string, string>> = {
   if (keys.length !== Object.keys(b).length) return false;
   for (const key of keys) if (!(key in b) || !$eq(a[key], b[key])) return false;
   return true;
+}`,
+  /*
+   * An optional component field read through a handle or a row. The host answers `undefined` for
+   * one that is absent, and a script's option is a tag.
+   */
+  $opt: `function $opt(v) {
+  return v === undefined ? { tag: 'none' } : { tag: 'some', value: v };
+}`,
+  /* And written: `none` reaches the host as `undefined`, which is how it clears the field. */
+  $unopt: `function $unopt(o) {
+  return o.tag === 'some' ? o.value : undefined;
 }`,
   $try: `function $try(v) {
   if (v.tag === 'Ok' || v.tag === 'some') return v.value;

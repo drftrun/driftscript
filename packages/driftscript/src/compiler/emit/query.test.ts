@@ -327,3 +327,80 @@ describe('a component write inside a query loop', () => {
   });
 });
 
+
+/**
+ * An optional component field: a value column and a presence column, read and written together.
+ *
+ * A loop that read the value column alone answered whatever the slot last held, so `if let` on a
+ * field the host had cleared matched; one that assigned an option stored the option object in a
+ * typed column, which is `NaN`. Through a handle the host answered a bare number for an option.
+ */
+describe('an optional field', () => {
+  const FOLLOW = `
+component Follow {
+    target: Entity?
+    gap: f64?
+}
+`;
+
+  it('reads its presence in a loop, and answers an option', () => {
+    const code = emit(`${FOLLOW}
+fn count(world: World) -> f64 {
+    var n: f64 = 0
+    for e in query<Follow>() {
+        if let t = e.Follow.target {
+            n += 1
+        }
+    }
+    return n
+}
+`);
+    expect(code).toContain(
+      "($v0_0.target$present[$i0_0] === 1 ? { tag: 'some', value: $v0_0.target[$i0_0] } : { tag: 'none' })",
+    );
+  });
+
+  it('writes its value and its presence in a loop, and none clears only the presence', () => {
+    const code = emit(`${FOLLOW}
+fn reset(world: World) {
+    for e in query<Follow>() {
+        e.Follow.gap = some(1.5)
+        e.Follow.target = none
+    }
+}
+`);
+    expect(code).toContain('$v0_0.gap[$i0_0] = $o.value;');
+    expect(code).toContain('$v0_0.gap$present[$i0_0] = 1;');
+    expect(code).toContain('$v0_0.target$present[$i0_0] = 0;');
+    expect(code).not.toMatch(/\$v0_0\.target\[\$i0_0\] = \{/);
+  });
+
+  it('converts through a handle, the host answering undefined for an absent one', async () => {
+    const code = emit(`${FOLLOW}
+fn gapOf(world: World, who: Entity) -> f64? {
+    return who.Follow.gap
+}
+
+fn forget(world: World, who: Entity) {
+    who.Follow.gap = none
+}
+`);
+    expect(code).toContain('$opt(ecs.read(world, who, "Follow", "gap"))');
+    expect(code).toContain('ecs.write(world, who, "Follow", "gap", $unopt({ tag: \'none\' }))');
+
+    const stored = new Map<string, number | undefined>([['gap', 4]]);
+    const ecs = {
+      read: (_w: unknown, _e: unknown, _c: string, field: string) => stored.get(field),
+      write: (_w: unknown, _e: unknown, _c: string, field: string, value: number | undefined) =>
+        stored.set(field, value),
+    };
+    const mod = await import(
+      /* @vite-ignore */ `data:text/javascript;base64,${btoa(code.replace(/^import .*$/gm, ''))}`
+    );
+    mod.__bind?.({ 'drift/ecs': ecs });
+    expect(mod.gapOf({}, 1)).toEqual({ tag: 'some', value: 4 });
+    mod.forget({}, 1);
+    expect(stored.get('gap')).toBe(undefined);
+    expect(mod.gapOf({}, 1)).toEqual({ tag: 'none' });
+  });
+});

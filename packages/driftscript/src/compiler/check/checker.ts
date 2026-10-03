@@ -105,6 +105,15 @@ export interface ImportedScope {
   readonly functions: ReadonlyMap<string, FnSignature>;
   /** Module constants, which cross a file boundary as an ordinary import like a function does. */
   readonly constants: ReadonlyMap<string, Type>;
+  /**
+   * The components each imported function reads and writes, by the name it is imported under.
+   *
+   * A function's access is a fact about its body, and a body is checked only in its own file, so
+   * the file publishes the answer the way it publishes the signature. Without it a call into
+   * another file touched nothing as far as a system was concerned: `DS0291` called a correct
+   * declaration unused, and an undeclared write passed the compiler and was refused by the engine.
+   */
+  readonly access?: ReadonlyMap<string, Access>;
 }
 
 export interface CheckResult {
@@ -688,11 +697,20 @@ class Checker {
     for (const decl of module.decls) {
       if (decl.kind === 'data') this.checkDataDefaults(decl);
     }
+    /* Only this file's own functions: the imported entries the inference was seeded with belong to
+       the files that declared them. */
+    const access = new Map<string, Access>();
+    for (const decl of module.decls) {
+      if (decl.kind !== 'fn') continue;
+      const found = this.access.get(decl.name);
+      if (found !== undefined) access.set(decl.name, found);
+    }
     return {
       data: this.data,
       enums: this.enums,
       functions: this.functions,
       constants: this.constants,
+      access,
       types: this.types,
       diagnostics: this.diagnostics,
     };
@@ -839,7 +857,7 @@ class Checker {
       report: (code, message, span) => this.report(code, message, span),
       taken: (name) => this.data.has(name) || this.enums.has(name),
     });
-    this.access = inferAccess(module, this.entityModel);
+    this.access = inferAccess(module, this.entityModel, this.imported?.access);
   }
 
   private collectData(decl: DataDecl): void {

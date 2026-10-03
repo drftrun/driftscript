@@ -12,6 +12,34 @@ tarball, and the copies are not committed — see `scripts/build.mjs`.
 
 ---
 
+## 1.16.0
+
+**An optional component field reads and writes as an option, in a query loop and through a handle.**
+
+A host keeps an optional field as two columns, its value and whether it is present, and the
+compiler read only the first. In a loop `e.Follow.target` answered whatever number the slot last
+held, so `if let` on a cleared field matched and on a set one never produced its value, and
+assigning `some(x)` or `none` put the option object in a typed column, which stored `NaN`. Through a
+handle, `who.Follow.target` answered the bare number. A consumer kept every optional handle as a
+plain entity and a flag beside it to get round this.
+
+A loop now reads `<field>$present` beside the value and writes both, and `none` clears the presence.
+That column name is part of the entity ABI from this version, beside the view's `sparse` and
+`dense`. A read through a handle or a row is wrapped in `$opt`, which turns the host's `undefined`
+for an absent field into `none`, and a write in `$unopt`, which hands it `undefined` for `none`. A
+host's `ecs.read` has to answer `undefined` for an absent optional field for this to work; one that
+answers zero reads every absent field as `some(0)`.
+
+**A system's component access follows its calls into other files.** Access was inferred from the
+module's own functions, so a call into another file touched nothing as far as the system was
+concerned. A system that declared what an imported helper wrote got `DS0291` calling the declaration
+unused, and one that left it undeclared got no `DS0288` and `__drift` metadata that never mentioned
+the write, so a host built a schedule that refused it when the system ran. Each module now publishes
+what its functions read and write with their signatures, and the importing module's inference
+starts from that.
+
+---
+
 ## 1.15.0
 
 **`==` compares what two values hold, so a variant still equals itself after a hot reload.**

@@ -459,6 +459,8 @@ function assertWalked(stmt: never): void {
 export function inferAccess(
   module: Module,
   model: EntityModel,
+  /** What functions imported from other files touch, which their own files worked out. */
+  imported: ReadonlyMap<string, Access> = new Map(),
 ): ReadonlyMap<string, Access> {
   const fns = module.decls.filter((d): d is FnDecl => d.kind === 'fn');
   const systems = module.decls.filter((d): d is SystemDecl => d.kind === 'system');
@@ -466,6 +468,14 @@ export function inferAccess(
   const reads = new Map<string, Set<string>>();
   const writes = new Map<string, Set<string>>();
   const calls = new Map<string, ReadonlySet<string>>();
+
+  /* Seeded and never re-derived: a call to one of these contributes its settled access, the same
+     arrangement `check/effects.ts` makes for an imported function's effects. A local declaration of
+     the same name replaces it below, since the names in front of you win. */
+  for (const [name, access] of imported) {
+    reads.set(name, new Set(access.reads));
+    writes.set(name, new Set(access.writes));
+  }
 
   for (const decl of [...fns, ...systems]) {
     /* A system takes no parameters, so its row map is always empty; a function's comes from the
